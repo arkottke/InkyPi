@@ -4,7 +4,7 @@ A plugin that displays school lunch menu information on your InkyPi e-ink displa
 
 ## Features
 
-- **Multi-day Display**: Show 1-7 days of menu items starting from today
+- **Multi-day Display**: Show 1-5 days of menu items starting from today
 - **Custom URL Support**: Parse menu data from any web URL  
 - **Flexible Layout**: Adapts to single or multi-day display formats
 - **Customizable Title**: Set your own display title
@@ -31,7 +31,7 @@ schoolmenu/
 The plugin provides the following settings:
 
 - **Menu URL**: Enter a URL where menu data can be found (optional - uses mock data if empty)
-- **Number of Days**: Display 1-7 days of menu data (1 Day, 2 Days, 3 Days, 4 Days, 5 Days (Work Week), 6 Days, 7 Days (Full Week))
+- **Number of Days**: Display 1-5 days of menu data (1 Day, 2 Days, 3 Days, 4 Days, 5 Days (Work Week))
 - **Custom Title**: Set a custom title for the display (default: "School Lunch Menu")
 - **Show Date**: Toggle whether to display the date (for single day) or day headers (for multi-day)
 - **Show Refresh Time**: Toggle whether to display when the data was last refreshed

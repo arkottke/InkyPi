@@ -4,13 +4,14 @@ Displays school lunch menu information on e-ink display
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
 
 import pytz
+import requests
 from PIL import Image, ImageDraw, ImageFont
 
 from plugins.base_plugin.base_plugin import BasePlugin
-from plugins.schoolmenu.lunch_menu_service import LunchMenuService
 from utils.app_utils import get_font
 
 logger = logging.getLogger(__name__)
@@ -21,14 +22,115 @@ class SchoolMenu(BasePlugin):
 
     def __init__(self, config, **dependencies):
         super().__init__(config, **dependencies)
-        # Will be initialized in generate_image with settings
-        self.menu_service = None
+        # Initialize mock menu data
+        self.mock_menu = {
+            "2025-09-25": [
+                "Chicken Burger",
+                "Rebellyous Chik'n Burger",
+                "Tater Tots",
+                "Garden Bar:",
+                "Organic Fresh Fruits and Veggies",
+                "Straus Organic 1% Milk",
+                "Non-fat milk",
+            ],
+            "2025-09-26": [
+                "Pizza Slice",
+                "Veggie Wrap",
+                "Sweet Potato Fries",
+                "Garden Bar:",
+                "Organic Fresh Fruits and Veggies",
+                "Straus Organic 1% Milk",
+            ],
+            "2025-09-27": [
+                "Beef Tacos",
+                "Black Bean Tacos",
+                "Mexican Rice",
+                "Garden Bar:",
+                "Organic Fresh Fruits and Veggies",
+                "Low-fat Milk",
+            ],
+            "2025-09-30": [
+                "Grilled Chicken Sandwich",
+                "Portobello Mushroom Burger",
+                "Baked Potato Wedges",
+                "Garden Bar:",
+                "Organic Fresh Fruits and Veggies",
+                "Straus Organic 1% Milk",
+            ],
+            "2025-10-01": [
+                "Spaghetti with Marinara",
+                "Veggie Pasta",
+                "Garlic Bread",
+                "Garden Bar:",
+                "Organic Fresh Fruits and Veggies",
+                "Non-fat milk",
+            ],
+        }
 
     def generate_settings_template(self):
         """Generate settings template parameters"""
         template_params = super().generate_settings_template()
         template_params["style_settings"] = "True"
         return template_params
+
+    def get_menu_for_days(
+        self, num_days: int = 1, menu_url: Optional[str] = None
+    ) -> Dict[str, List[str]]:
+        """Get menu items for the specified number of days starting from today"""
+        if num_days < 1 or num_days > 5:
+            raise ValueError("Number of days must be between 1 and 5")
+
+        if menu_url:
+            return self._fetch_menu_from_url(num_days, menu_url)
+        else:
+            return self._get_mock_menu_for_days(num_days)
+
+    def _fetch_menu_from_url(
+        self, num_days: int, menu_url: str
+    ) -> Dict[str, List[str]]:
+        """Fetch menu from the provided URL"""
+        try:
+            if not menu_url:
+                raise ValueError("Menu URL is not provided")
+
+            logger.info(f"Fetching menu from URL: {menu_url}")
+            response = requests.get(menu_url, timeout=10)
+            response.raise_for_status()
+
+            # This is a placeholder - actual parsing would depend on the URL format
+            # For now, return mock data as fallback
+            logger.warning("URL parsing not implemented yet, using mock data")
+            return self._get_mock_menu_for_days(num_days)
+
+        except Exception as e:
+            logger.error(f"Failed to fetch menu from URL: {e}")
+            logger.info("Falling back to mock data")
+            return self._get_mock_menu_for_days(num_days)
+
+    def _get_mock_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
+        """Get mock menu data for specified number of days"""
+        menu_data = {}
+        base_date = date.today()
+
+        for i in range(num_days):
+            current_date = base_date + timedelta(days=i)
+            date_str = current_date.strftime("%Y-%m-%d")
+
+            # Get menu for this date or provide default
+            menu_items = self.mock_menu.get(
+                date_str,
+                [
+                    f"Daily Special #{i + 1}",
+                    "Vegetarian Option",
+                    "Side Dish",
+                    "Garden Bar: Fresh Fruits and Veggies",
+                    "Milk",
+                ],
+            )
+
+            menu_data[date_str] = menu_items
+
+        return menu_data
 
     def generate_image(self, settings, device_config):
         """Generate the school menu image"""
@@ -40,19 +142,13 @@ class SchoolMenu(BasePlugin):
             custom_title = settings.get("customTitle", "School Lunch Menu")
 
             # Validate num_days
-            if num_days < 1 or num_days > 7:
+            if num_days < 1 or num_days > 5:
                 num_days = 1
 
-            # Initialize service with URL if provided
-            if menu_url:
-                self.menu_service = LunchMenuService(menu_url=menu_url)
-            else:
-                self.menu_service = LunchMenuService()
-
             # Get menu data for specified days
-            menu_data = self.menu_service.get_menu_for_days(num_days)
-
-            # Get device configuration
+            menu_data = self.get_menu_for_days(
+                num_days, menu_url
+            )  # Get device configuration
             dimensions = device_config.get_resolution()
             if device_config.get_config("orientation") == "vertical":
                 dimensions = dimensions[::-1]
