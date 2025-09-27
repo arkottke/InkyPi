@@ -1,0 +1,75 @@
+<div class="form-group">
+    <label for="menuUrl" class="form-label">Menu URL:</label>
+    <input type="url" id="menuUrl" name="menuUrl" class="form-input" placeholder="https://example.com/school-menu" />
+    <small class="form-help">Enter the URL where the menu data can be found. Leave blank to use mock data.</small>
+</div>
+
+<div class="form-group">
+    <label for="numDays" class="form-label">Number of Days to Display:</label>
+    <select id="numDays" name="numDays" class="form-input">
+        <option value="1">1 Day</option>
+        <option value="2">2 Days</option>
+        <option value="3">3 Days</option>
+        <option value="4">4 Days</option>
+        <option value="5">5 Days (Work Week)</option>
+        <option value="6">6 Days</option>
+        <option value="7">7 Days (Full Week)</option>
+    </select>
+</div>
+
+<div class="form-group">
+    <label for="customTitle" class="form-label">Custom Title:</label>
+    <input type="text" id="customTitle" name="customTitle" class="form-input" value="School Lunch Menu" placeholder="School Lunch Menu" />
+</div>
+
+<div class="form-group">
+    <input type="checkbox" id="showDate" name="showDate" checked onclick="this.value=this.checked ? 'true' : 'false';">
+    <label for="showDate">Show Date</label>
+</div>
+
+<div class="form-group">
+    <label class="form-label">Display Options:</label>
+    <div class="form-group">
+        <input type="checkbox" id="displayRefreshTime" name="displayRefreshTime" onclick="this.value=this.checked ? 'true' : 'false';">
+        <label for="displayRefreshTime">Show Refresh Time</label>
+    </div>
+</div>
+
+<script>
+    // Set default values on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        // Set default number of days to 1
+        const numDaysSelect = document.getElementById('numDays');
+        if (numDaysSelect && !numDaysSelect.value) {
+            numDaysSelect.value = '1';
+        }
+        
+        // Set default custom title
+        const customTitleInput = document.getElementById('customTitle');
+        if (customTitleInput && !customTitleInput.value) {
+            customTitleInput.value = 'School Lunch Menu';
+        }
+        
+        // Set default show date to checked
+        const showDateCheckbox = document.getElementById('showDate');
+        if (showDateCheckbox) {
+            showDateCheckbox.checked = true;
+            showDateCheckbox.value = 'true';
+        }
+        
+        // Add help text behavior for URL field
+        const urlInput = document.getElementById('menuUrl');
+        const numDaysField = document.getElementById('numDays');
+        
+        // Show/hide advanced options based on URL input
+        function toggleAdvancedOptions() {
+            const hasUrl = urlInput.value.trim().length > 0;
+            // You could add logic here to show/hide additional parsing options
+        }
+        
+        if (urlInput) {
+            urlInput.addEventListener('input', toggleAdvancedOptions);
+            toggleAdvancedOptions(); // Initial check
+        }
+    });
+</script>
