@@ -9,12 +9,34 @@ from typing import Dict, List, Optional
 
 import pytz
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from plugins.base_plugin.base_plugin import BasePlugin
 from utils.app_utils import get_font
 
 logger = logging.getLogger(__name__)
+
+# Font size options (similar to calendar plugin)
+FONT_SIZES = {
+    "x-small": 0.7,
+    "smaller": 0.8,
+    "small": 0.9,
+    "normal": 1,
+    "large": 1.1,
+    "larger": 1.2,
+    "x-large": 1.3,
+}
+
+# Standard lunch items to filter out
+STANDARD_ITEMS = [
+    "Garden Bar:",
+    "Organic Fresh Fruits and Veggies",
+    "Straus Organic 1% Milk",
+    "Non-fat milk",
+    "Low-fat Milk",
+    "Milk",
+    "Garden Bar: Fresh Fruits and Veggies",
+]
 
 
 class SchoolMenu(BasePlugin):
@@ -108,29 +130,55 @@ class SchoolMenu(BasePlugin):
             return self._get_mock_menu_for_days(num_days)
 
     def _get_mock_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
-        """Get mock menu data for specified number of days"""
+        """Get mock menu data for specified number of days, skipping weekends"""
         menu_data = {}
-        base_date = date.today()
+        current_date = date.today()
+        days_added = 0
 
-        for i in range(num_days):
-            current_date = base_date + timedelta(days=i)
-            date_str = current_date.strftime("%Y-%m-%d")
+        while days_added < num_days:
+            # Skip weekends (Saturday = 5, Sunday = 6)
+            if current_date.weekday() < 5:  # Monday = 0, Friday = 4
+                date_str = current_date.strftime("%Y-%m-%d")
 
-            # Get menu for this date or provide default
-            menu_items = self.mock_menu.get(
-                date_str,
-                [
-                    f"Daily Special #{i + 1}",
-                    "Vegetarian Option",
-                    "Side Dish",
-                    "Garden Bar: Fresh Fruits and Veggies",
-                    "Milk",
-                ],
-            )
+                # Get menu for this date or provide default
+                menu_items = self.mock_menu.get(
+                    date_str,
+                    [
+                        f"Daily Special #{days_added + 1}",
+                        "Vegetarian Option",
+                        "Side Dish",
+                        "Garden Bar: Fresh Fruits and Veggies",
+                        "Milk",
+                    ],
+                )
 
-            menu_data[date_str] = menu_items
+                # Filter out standard items
+                filtered_items = self._filter_standard_items(menu_items)
+
+                # Only add if there are items after filtering
+                if filtered_items:
+                    menu_data[date_str] = filtered_items
+                    days_added += 1
+
+            current_date += timedelta(days=1)
 
         return menu_data
+
+    def _filter_standard_items(self, menu_items: List[str]) -> List[str]:
+        """Filter out standard lunch items like garden bar and milk"""
+        filtered_items = []
+        for item in menu_items:
+            # Check if this item should be filtered out
+            should_filter = False
+            for standard_item in STANDARD_ITEMS:
+                if standard_item.lower() in item.lower():
+                    should_filter = True
+                    break
+
+            if not should_filter:
+                filtered_items.append(item)
+
+        return filtered_items
 
     def generate_image(self, settings, device_config):
         """Generate the school menu image"""
@@ -140,6 +188,10 @@ class SchoolMenu(BasePlugin):
             num_days = int(settings.get("numDays", 1))
             show_date = settings.get("showDate", True)
             custom_title = settings.get("customTitle", "School Lunch Menu")
+            font_size = settings.get("fontSize", "normal")
+
+            # Get font scale factor
+            font_scale = FONT_SIZES.get(font_size, 1.0)
 
             # Validate num_days
             if num_days < 1 or num_days > 5:
@@ -173,15 +225,25 @@ class SchoolMenu(BasePlugin):
                 text_color = (0, 0, 0)  # Black
                 accent_color = (50, 50, 150)  # Dark blue
 
-            # Fonts
+            # Fonts with scaling
             try:
-                title_font = get_font("Jost", font_size=24, font_weight="bold")
+                title_font = get_font(
+                    "Jost", font_size=int(24 * font_scale), font_weight="bold"
+                )
                 if title_font is None:
-                    title_font = get_font("Jost", font_size=24, font_weight="normal")
+                    title_font = get_font(
+                        "Jost", font_size=int(24 * font_scale), font_weight="normal"
+                    )
 
-                date_font = get_font("Jost", font_size=16, font_weight="normal")
-                item_font = get_font("Jost", font_size=14, font_weight="normal")
-                small_font = get_font("Jost", font_size=12, font_weight="normal")
+                date_font = get_font(
+                    "Jost", font_size=int(16 * font_scale), font_weight="normal"
+                )
+                item_font = get_font(
+                    "Jost", font_size=int(14 * font_scale), font_weight="normal"
+                )
+                small_font = get_font(
+                    "Jost", font_size=int(12 * font_scale), font_weight="normal"
+                )
 
                 # Fallback to default if any font loading fails
                 if any(
@@ -192,6 +254,8 @@ class SchoolMenu(BasePlugin):
 
             except Exception as e:
                 logger.warning(f"Font loading failed: {e}, using default font")
+                from PIL import ImageFont
+
                 title_font = ImageFont.load_default()
                 date_font = ImageFont.load_default()
                 item_font = ImageFont.load_default()

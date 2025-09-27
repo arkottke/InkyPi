@@ -21,6 +21,19 @@
 </div>
 
 <div class="form-group">
+    <label for="fontSize" class="form-label">Font Size:</label>
+    <select id="fontSize" name="fontSize" class="form-input">
+        <option value="x-small">Extra Small</option>
+        <option value="smaller">Smaller</option>
+        <option value="small">Small</option>
+        <option value="normal">Normal</option>
+        <option value="large">Large</option>
+        <option value="larger">Larger</option>
+        <option value="x-large">Extra Large</option>
+    </select>
+</div>
+
+<div class="form-group">
     <input type="checkbox" id="showDate" name="showDate" checked onclick="this.value=this.checked ? 'true' : 'false';">
     <label for="showDate">Show Date</label>
 </div>
@@ -46,6 +59,12 @@
         const customTitleInput = document.getElementById('customTitle');
         if (customTitleInput && !customTitleInput.value) {
             customTitleInput.value = 'School Lunch Menu';
+        }
+        
+        // Set default font size to normal
+        const fontSizeSelect = document.getElementById('fontSize');
+        if (fontSizeSelect && !fontSizeSelect.value) {
+            fontSizeSelect.value = 'normal';
         }
         
         // Set default show date to checked

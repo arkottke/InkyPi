@@ -1,4 +1,17 @@
-# School Menu Plugin for InkyPi
+# Sc## Features
+
+- **Multi-day Display**: Show 1-5 days of menu items starting from today
+- **Weekend Skipping**: Automatically skips Saturday and Sunday when fetching school days
+- **Smart Filtering**: Filters out standard lunch items (Garden Bar, Milk, etc.)
+- **Custom URL Support**: Parse menu data from any web URL  
+- **Flexible Layout**: Adapts to single or multi-day display formats
+- **Font Size Control**: Choose from 7 font sizes (Extra Small to Extra Large)
+- **Customizable Title**: Set your own display title
+- **Optional Date Display**: Show/hide date information
+- **Automatic Fallback**: Uses mock data if URL parsing fails
+- **Clean Layout**: Organized with bullet points and day headers
+- **Automatic Refresh Timestamp**: Shows when the data was last updated
+- **Multi-display Support**: Works with both black & white and color displayslugin for InkyPi
 
 A plugin that displays school lunch menu information on your InkyPi e-ink display with support for custom URL parsing and multi-day menu display.
 
@@ -33,10 +46,27 @@ The plugin provides the following settings:
 - **Menu URL**: Enter a URL where menu data can be found (optional - uses mock data if empty)
 - **Number of Days**: Display 1-5 days of menu data (1 Day, 2 Days, 3 Days, 4 Days, 5 Days (Work Week))
 - **Custom Title**: Set a custom title for the display (default: "School Lunch Menu")
+- **Font Size**: Choose font size from Extra Small to Extra Large (default: Normal)
 - **Show Date**: Toggle whether to display the date (for single day) or day headers (for multi-day)
 - **Show Refresh Time**: Toggle whether to display when the data was last refreshed
 
-## URL Integration
+## Smart Features
+
+### Weekend Skipping
+The plugin automatically skips weekends (Saturday and Sunday) when generating multiple days of menus, ensuring you only see school days.
+
+### Item Filtering
+Standard lunch items are automatically filtered out to focus on the main meal options:
+- Garden Bar and variations
+- Milk options (Organic, Low-fat, Non-fat, etc.)
+- Generic "Fresh Fruits and Veggies" items
+
+### Font Scaling
+Font sizes are applied consistently across all text elements:
+- Title: 24pt base × scale factor
+- Date headers: 16pt base × scale factor  
+- Menu items: 14pt base × scale factor
+- Small text/timestamps: 12pt base × scale factor
 
 ### Current Implementation
 - The plugin accepts any URL in the Menu URL field
