@@ -90,12 +90,8 @@
     margin-left: 15px;
 }
 
-/* Multi-day view indentation */
-.day-section:not(:first-child) .menu-items {
-    margin-left: 15px;
-}
-
-.day-section:not(:first-child) .bullet {
+/* Consistent indentation for all days */
+.day-section .menu-items {
     margin-left: 15px;
 }
 

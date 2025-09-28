@@ -34,8 +34,6 @@
             <div class="day-header">
                 {% if date_str == today_str %}
                     Today
-                {% elif date_str == tomorrow_str %}
-                    Tomorrow
                 {% else %}
                     {{ day_names[date_str] }}
                 {% endif %}
