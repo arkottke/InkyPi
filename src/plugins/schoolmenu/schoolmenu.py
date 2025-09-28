@@ -1,6 +1,6 @@
 """
 School Menu Plugin for InkyPi
-Displays school lunch menu information on e-ink display
+Displays school lunch menu information from a School Nutrition website GraphQL API.
 
 This plugin fetches real menu data from School Nutrition and Fitness websites using GraphQL API.
 
@@ -33,7 +33,7 @@ FONT_SIZES = {
 
 # Standard lunch items to filter out
 STANDARD_ITEMS = [
-    "Garden Bar:",
+    "Garden Bar",
     "Organic Fresh Fruits and Veggies",
     "Straus Organic 1% Milk",
     "Non-fat milk",
@@ -64,19 +64,25 @@ class SchoolMenu(BasePlugin):
 
     def get_menu_for_days(
         self,
-        num_days: int = 1,
+        num_days: int,
         menu_id: Optional[str] = None,
         site_code: Optional[str] = None,
     ) -> Dict[str, List[str]]:
         """Get menu items for the specified number of days starting from today"""
+        logger.info(
+            f"DEBUG: get_menu_for_days called with num_days={num_days}, menu_id={menu_id}, site_code={site_code}"
+        )
+
         if not self._is_valid_day_count(num_days):
             raise ValueError(
                 f"Number of days must be between {MIN_DAYS} and {MAX_DAYS}"
             )
 
         if menu_id:
+            logger.info("DEBUG: menu_id exists, calling _fetch_menu_from_api")
             return self._fetch_menu_from_api(num_days, menu_id, site_code)
         else:
+            logger.info("DEBUG: menu_id is empty/None, returning empty menu")
             return self._get_empty_menu_for_days(num_days)
 
     def _is_valid_day_count(self, num_days: int) -> bool:
@@ -108,6 +114,7 @@ class SchoolMenu(BasePlugin):
 
             if response.status_code != 200:
                 logger.error(f"GraphQL API returned status {response.status_code}")
+                logger.error(f"Response content: {response.text}")
                 return self._get_empty_menu_for_days(num_days)
 
             data = response.json()
@@ -118,6 +125,7 @@ class SchoolMenu(BasePlugin):
 
             if not data.get("data", {}).get("menu"):
                 logger.error("No menu data returned from API")
+                logger.error(f"DEBUG: Full response: {data}")
                 return self._get_empty_menu_for_days(num_days)
 
             menu = data["data"]["menu"]
@@ -162,18 +170,29 @@ class SchoolMenu(BasePlugin):
     ) -> Dict[str, List[str]]:
         """Parse menu data from GraphQL response"""
         try:
+            # DEBUG: Log raw menu data from GraphQL
+            logger.info(f"DEBUG: Raw GraphQL menu data: {menu}")
+            logger.info(f"DEBUG: Menu items count: {len(menu.get('items', []))}")
+
             # Validate menu structure
             menu_month, menu_year = self._extract_menu_dates(menu)
             if not menu_month or not menu_year:
+                logger.info(
+                    f"DEBUG: Invalid menu dates - month: {menu_month}, year: {menu_year}"
+                )
                 return self._get_empty_menu_for_days(num_days)
+
+            logger.info(f"DEBUG: Menu for {menu_month}/{menu_year}")
 
             # Group items by day
             daily_items = self._group_items_by_day(menu.get("items", []))
+            logger.info(f"DEBUG: Daily items grouped: {daily_items}")
 
             # Convert to date-based format
             menu_data = self._convert_to_date_format(
                 daily_items, menu_month, menu_year, num_days
             )
+            logger.info(f"DEBUG: Final menu_data: {menu_data}")
 
             logger.info(f"Successfully parsed menu data for {len(menu_data)} days")
             return menu_data
@@ -221,6 +240,11 @@ class SchoolMenu(BasePlugin):
         num_days: int,
     ) -> Dict[str, List[str]]:
         """Convert daily items to date-based format"""
+        logger.info(f"DEBUG: Converting to date format - daily_items: {daily_items}")
+        logger.info(
+            f"DEBUG: Menu range: {menu_month}/{menu_year}, num_days: {num_days}"
+        )
+
         menu_data = {}
         search_date = date.today()
         days_added = 0
@@ -229,14 +253,21 @@ class SchoolMenu(BasePlugin):
             # Skip weekends
             if self._is_school_day(search_date):
                 date_str = search_date.strftime("%Y-%m-%d")
+                logger.info(f"DEBUG: Processing date {date_str}")
 
                 if self._is_date_in_menu_range(search_date, menu_month, menu_year):
                     day_of_month = search_date.day
+                    logger.info(
+                        f"DEBUG: Day {day_of_month} - available items: {daily_items.get(day_of_month, 'None')}"
+                    )
 
                     if day_of_month in daily_items:
                         # Filter out standard items
                         items = daily_items[day_of_month]
                         filtered_items = self._filter_standard_items(items)
+                        logger.info(
+                            f"DEBUG: Filtered items for {date_str}: {filtered_items}"
+                        )
 
                         # Only add if we have items after filtering
                         if filtered_items:
@@ -246,12 +277,14 @@ class SchoolMenu(BasePlugin):
                     else:
                         menu_data[date_str] = ["No menu available"]
                 else:
+                    logger.info(f"DEBUG: Date {date_str} not in menu range")
                     menu_data[date_str] = ["No menu available"]
 
                 days_added += 1
 
             search_date += timedelta(days=1)
 
+        logger.info(f"DEBUG: Final converted menu_data: {menu_data}")
         return menu_data
 
     def _is_school_day(self, check_date: date) -> bool:
@@ -261,8 +294,38 @@ class SchoolMenu(BasePlugin):
     def _is_date_in_menu_range(
         self, check_date: date, menu_month: int, menu_year: int
     ) -> bool:
-        """Check if the given date is within the menu's month/year range"""
-        return check_date.month == menu_month and check_date.year == menu_year
+        """Check if the given date is within the menu's month/year range
+
+        Handle cases where menu metadata might be off by checking current and adjacent months
+        """
+        # Primary check: exact month match
+        if check_date.month == menu_month and check_date.year == menu_year:
+            return True
+
+        # Secondary check: allow for month metadata being off by 1
+        # This handles cases where menu shows August but contains September data
+        current_month = check_date.month
+        current_year = check_date.year
+
+        # Check if we're in the month after the menu month (menu month might be behind)
+        if (current_month == menu_month + 1 and current_year == menu_year) or (
+            current_month == 1 and menu_month == 12 and current_year == menu_year + 1
+        ):
+            logger.info(
+                f"DEBUG: Allowing date {check_date} for menu month {menu_month}/{menu_year} (month metadata may be off)"
+            )
+            return True
+
+        # Check if we're in the month before the menu month (menu month might be ahead)
+        if (current_month == menu_month - 1 and current_year == menu_year) or (
+            current_month == 12 and menu_month == 1 and current_year == menu_year - 1
+        ):
+            logger.info(
+                f"DEBUG: Allowing date {check_date} for menu month {menu_month}/{menu_year} (month metadata may be off)"
+            )
+            return True
+
+        return False
 
     def _get_empty_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
         """Get empty menu structure for specified number of days, skipping weekends"""
@@ -400,9 +463,11 @@ class SchoolMenu(BasePlugin):
 
     def _parse_settings(self, settings: dict) -> dict:
         """Parse and validate plugin settings"""
-        menu_id = settings.get("menuId", "").strip()
+        menu_id = (
+            settings.get("menuId", "").strip() or settings.get("schoolId", "").strip()
+        )
         site_code = settings.get("siteCode", "").strip() or None
-        num_days = int(settings.get("numDays", 1))
+        num_days = int(settings.get("numDays", settings.get("numberOfDays", 1)))
         show_date = settings.get("showDate", True)
         custom_title = settings.get("customTitle", "School Lunch Menu")
         font_size = settings.get("fontSize", "normal")
