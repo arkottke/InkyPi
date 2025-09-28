@@ -1,30 +1,34 @@
 """
 School Menu Plugin for InkyPi
 Displays school lunch menu information on e-ink display
+
+This plugin fetches real menu data from School Nutrition and Fitness websites using GraphQL API.
+
+Settings:
+- menuId: Menu ID from the School Nutrition website URL (e.g., 68750f9b40a2c835145a7cc2)
+- siteCode: Optional site code if present in URL (e.g., 894)
+- numDays: Number of days to display (1-5)
+- customTitle: Custom title for the menu display
+- fontSize: Font size for menu items
+- showDate: Whether to show dates
 """
 
 import logging
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
-import pytz
 import requests
-from PIL import Image, ImageDraw
 
 from plugins.base_plugin.base_plugin import BasePlugin
-from utils.app_utils import get_font
 
 logger = logging.getLogger(__name__)
 
-# Font size options (similar to calendar plugin)
+# Font scaling options
 FONT_SIZES = {
-    "x-small": 0.7,
-    "smaller": 0.8,
-    "small": 0.9,
-    "normal": 1,
-    "large": 1.1,
-    "larger": 1.2,
-    "x-large": 1.3,
+    "small": 0.8,
+    "normal": 1.0,
+    "large": 1.2,
+    "extra_large": 1.4,
 }
 
 # Standard lunch items to filter out
@@ -38,56 +42,19 @@ STANDARD_ITEMS = [
     "Garden Bar: Fresh Fruits and Veggies",
 ]
 
+# API Configuration
+GRAPHQL_API_URL = "https://api.isitesoftware.com/graphql"
+API_TIMEOUT = 15
+MAX_DAYS = 5
+MIN_DAYS = 1
+
 
 class SchoolMenu(BasePlugin):
     """Plugin to display school lunch menu"""
 
     def __init__(self, config, **dependencies):
         super().__init__(config, **dependencies)
-        # Initialize mock menu data
-        self.mock_menu = {
-            "2025-09-25": [
-                "Chicken Burger",
-                "Rebellyous Chik'n Burger",
-                "Tater Tots",
-                "Garden Bar:",
-                "Organic Fresh Fruits and Veggies",
-                "Straus Organic 1% Milk",
-                "Non-fat milk",
-            ],
-            "2025-09-26": [
-                "Pizza Slice",
-                "Veggie Wrap",
-                "Sweet Potato Fries",
-                "Garden Bar:",
-                "Organic Fresh Fruits and Veggies",
-                "Straus Organic 1% Milk",
-            ],
-            "2025-09-27": [
-                "Beef Tacos",
-                "Black Bean Tacos",
-                "Mexican Rice",
-                "Garden Bar:",
-                "Organic Fresh Fruits and Veggies",
-                "Low-fat Milk",
-            ],
-            "2025-09-30": [
-                "Grilled Chicken Sandwich",
-                "Portobello Mushroom Burger",
-                "Baked Potato Wedges",
-                "Garden Bar:",
-                "Organic Fresh Fruits and Veggies",
-                "Straus Organic 1% Milk",
-            ],
-            "2025-10-01": [
-                "Spaghetti with Marinara",
-                "Veggie Pasta",
-                "Garlic Bread",
-                "Garden Bar:",
-                "Organic Fresh Fruits and Veggies",
-                "Non-fat milk",
-            ],
-        }
+        # Initialize menu parser - no more mock data
 
     def generate_settings_template(self):
         """Generate settings template parameters"""
@@ -96,41 +63,209 @@ class SchoolMenu(BasePlugin):
         return template_params
 
     def get_menu_for_days(
-        self, num_days: int = 1, menu_url: Optional[str] = None
+        self,
+        num_days: int = 1,
+        menu_id: Optional[str] = None,
+        site_code: Optional[str] = None,
     ) -> Dict[str, List[str]]:
         """Get menu items for the specified number of days starting from today"""
-        if num_days < 1 or num_days > 5:
-            raise ValueError("Number of days must be between 1 and 5")
+        if not self._is_valid_day_count(num_days):
+            raise ValueError(
+                f"Number of days must be between {MIN_DAYS} and {MAX_DAYS}"
+            )
 
-        if menu_url:
-            return self._fetch_menu_from_url(num_days, menu_url)
+        if menu_id:
+            return self._fetch_menu_from_api(num_days, menu_id, site_code)
         else:
-            return self._get_mock_menu_for_days(num_days)
+            return self._get_empty_menu_for_days(num_days)
 
-    def _fetch_menu_from_url(
-        self, num_days: int, menu_url: str
+    def _is_valid_day_count(self, num_days: int) -> bool:
+        """Validate the number of days parameter"""
+        return MIN_DAYS <= num_days <= MAX_DAYS
+
+    def _fetch_menu_from_api(
+        self, num_days: int, menu_id: str, site_code: Optional[str] = None
     ) -> Dict[str, List[str]]:
-        """Fetch menu from the provided URL"""
+        """Fetch menu from the GraphQL API using menu ID"""
         try:
-            if not menu_url:
-                raise ValueError("Menu URL is not provided")
+            if not menu_id:
+                raise ValueError("Menu ID is not provided")
 
-            logger.info(f"Fetching menu from URL: {menu_url}")
-            response = requests.get(menu_url, timeout=10)
-            response.raise_for_status()
+            logger.info(f"Fetching menu data for ID: {menu_id}")
+            if site_code:
+                logger.info(f"Using site code: {site_code}")
 
-            # This is a placeholder - actual parsing would depend on the URL format
-            # For now, return mock data as fallback
-            logger.warning("URL parsing not implemented yet, using mock data")
-            return self._get_mock_menu_for_days(num_days)
+            # Build GraphQL query
+            graphql_query = self._build_menu_query(menu_id)
+
+            # Make the GraphQL request
+            response = requests.post(
+                GRAPHQL_API_URL,
+                json=graphql_query,
+                headers=self._get_api_headers(),
+                timeout=API_TIMEOUT,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"GraphQL API returned status {response.status_code}")
+                return self._get_empty_menu_for_days(num_days)
+
+            data = response.json()
+
+            if "errors" in data:
+                logger.error(f"GraphQL errors: {data['errors']}")
+                return self._get_empty_menu_for_days(num_days)
+
+            if not data.get("data", {}).get("menu"):
+                logger.error("No menu data returned from API")
+                return self._get_empty_menu_for_days(num_days)
+
+            menu = data["data"]["menu"]
+            return self._parse_graphql_menu_data(menu, num_days)
 
         except Exception as e:
-            logger.error(f"Failed to fetch menu from URL: {e}")
-            logger.info("Falling back to mock data")
-            return self._get_mock_menu_for_days(num_days)
+            logger.error(f"Error fetching menu from API: {e}")
+            return self._get_empty_menu_for_days(num_days)
 
-    def _get_mock_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
-        """Get mock menu data for specified number of days, skipping weekends"""
+    def _build_menu_query(self, menu_id: str) -> dict:
+        """Build GraphQL query for menu data"""
+        return {
+            "query": """query {
+                menu(id: \"%s\") {
+                    name
+                    month
+                    year
+                    items {
+                        day
+                        month
+                        year
+                        date
+                        product {
+                            name
+                        }
+                    }
+                }
+            }"""
+            % menu_id
+        }
+
+    def _get_api_headers(self) -> dict:
+        """Get headers for API requests"""
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        }
+
+    def _parse_graphql_menu_data(
+        self, menu: dict, num_days: int
+    ) -> Dict[str, List[str]]:
+        """Parse menu data from GraphQL response"""
+        try:
+            # Validate menu structure
+            menu_month, menu_year = self._extract_menu_dates(menu)
+            if not menu_month or not menu_year:
+                return self._get_empty_menu_for_days(num_days)
+
+            # Group items by day
+            daily_items = self._group_items_by_day(menu.get("items", []))
+
+            # Convert to date-based format
+            menu_data = self._convert_to_date_format(
+                daily_items, menu_month, menu_year, num_days
+            )
+
+            logger.info(f"Successfully parsed menu data for {len(menu_data)} days")
+            return menu_data
+
+        except Exception as e:
+            logger.error(f"Error parsing GraphQL menu data: {e}")
+            return self._get_empty_menu_for_days(num_days)
+
+    def _extract_menu_dates(self, menu: dict) -> tuple[Optional[int], Optional[int]]:
+        """Extract month and year from menu data"""
+        menu_month = menu.get("month")
+        menu_year = menu.get("year")
+
+        if not menu_month or not menu_year:
+            logger.error("Menu missing month or year information")
+            return None, None
+
+        return menu_month, menu_year
+
+    def _group_items_by_day(self, items: List[dict]) -> Dict[int, List[str]]:
+        """Group menu items by day of month"""
+        daily_items = {}
+
+        for item in items:
+            day = item.get("day")
+            product = item.get("product", {})
+            product_name = product.get("name")
+
+            if day and product_name and str(product_name).strip():
+                if day not in daily_items:
+                    daily_items[day] = []
+
+                # Clean the product name - remove colons and extra whitespace
+                cleaned_name = str(product_name).strip().rstrip(":")
+                if cleaned_name and cleaned_name not in daily_items[day]:
+                    daily_items[day].append(cleaned_name)
+
+        return daily_items
+
+    def _convert_to_date_format(
+        self,
+        daily_items: Dict[int, List[str]],
+        menu_month: int,
+        menu_year: int,
+        num_days: int,
+    ) -> Dict[str, List[str]]:
+        """Convert daily items to date-based format"""
+        menu_data = {}
+        search_date = date.today()
+        days_added = 0
+
+        while days_added < num_days:
+            # Skip weekends
+            if self._is_school_day(search_date):
+                date_str = search_date.strftime("%Y-%m-%d")
+
+                if self._is_date_in_menu_range(search_date, menu_month, menu_year):
+                    day_of_month = search_date.day
+
+                    if day_of_month in daily_items:
+                        # Filter out standard items
+                        items = daily_items[day_of_month]
+                        filtered_items = self._filter_standard_items(items)
+
+                        # Only add if we have items after filtering
+                        if filtered_items:
+                            menu_data[date_str] = filtered_items
+                        else:
+                            menu_data[date_str] = ["No menu available"]
+                    else:
+                        menu_data[date_str] = ["No menu available"]
+                else:
+                    menu_data[date_str] = ["No menu available"]
+
+                days_added += 1
+
+            search_date += timedelta(days=1)
+
+        return menu_data
+
+    def _is_school_day(self, check_date: date) -> bool:
+        """Check if the given date is a school day (Monday-Friday)"""
+        return check_date.weekday() < 5  # Monday=0, Friday=4
+
+    def _is_date_in_menu_range(
+        self, check_date: date, menu_month: int, menu_year: int
+    ) -> bool:
+        """Check if the given date is within the menu's month/year range"""
+        return check_date.month == menu_month and check_date.year == menu_year
+
+    def _get_empty_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
+        """Get empty menu structure for specified number of days, skipping weekends"""
         menu_data = {}
         current_date = date.today()
         days_added = 0
@@ -139,26 +274,9 @@ class SchoolMenu(BasePlugin):
             # Skip weekends (Saturday = 5, Sunday = 6)
             if current_date.weekday() < 5:  # Monday = 0, Friday = 4
                 date_str = current_date.strftime("%Y-%m-%d")
-
-                # Get menu for this date or provide default
-                menu_items = self.mock_menu.get(
-                    date_str,
-                    [
-                        f"Daily Special #{days_added + 1}",
-                        "Vegetarian Option",
-                        "Side Dish",
-                        "Garden Bar: Fresh Fruits and Veggies",
-                        "Milk",
-                    ],
-                )
-
-                # Filter out standard items
-                filtered_items = self._filter_standard_items(menu_items)
-
-                # Only add if there are items after filtering
-                if filtered_items:
-                    menu_data[date_str] = filtered_items
-                    days_added += 1
+                # Return empty list to indicate no menu data available
+                menu_data[date_str] = ["Menu not available"]
+                days_added += 1
 
             current_date += timedelta(days=1)
 
@@ -181,231 +299,124 @@ class SchoolMenu(BasePlugin):
         return filtered_items
 
     def generate_image(self, settings, device_config):
-        """Generate the school menu image"""
+        """Generate the school menu image using HTML/CSS rendering"""
         try:
-            # Get settings
-            menu_url = settings.get("menuUrl", "").strip()
-            num_days = int(settings.get("numDays", 1))
-            show_date = settings.get("showDate", True)
-            custom_title = settings.get("customTitle", "School Lunch Menu")
-            font_size = settings.get("fontSize", "normal")
-
-            # Get font scale factor
-            font_scale = FONT_SIZES.get(font_size, 1.0)
-
-            # Validate num_days
-            if num_days < 1 or num_days > 5:
-                num_days = 1
+            # Parse and validate settings
+            config = self._parse_settings(settings)
 
             # Get menu data for specified days
             menu_data = self.get_menu_for_days(
-                num_days, menu_url
-            )  # Get device configuration
+                config["num_days"], config["menu_id"], config["site_code"]
+            )
+
+            # Get dimensions
             dimensions = device_config.get_resolution()
             if device_config.get_config("orientation") == "vertical":
                 dimensions = dimensions[::-1]
 
-            width, height = dimensions
-
-            # Create image
-            if device_config.get_config("color") == "bw":
-                img = Image.new("1", (width, height), 1)  # White background
-            else:
-                img = Image.new(
-                    "RGB", (width, height), (255, 255, 255)
-                )  # White background
-
-            draw = ImageDraw.Draw(img)
-
-            # Colors based on device type
-            if device_config.get_config("color") == "bw":
-                text_color = 0  # Black
-                accent_color = 0  # Black
-            else:
-                text_color = (0, 0, 0)  # Black
-                accent_color = (50, 50, 150)  # Dark blue
-
-            # Fonts with scaling
-            try:
-                title_font = get_font(
-                    "Jost", font_size=int(24 * font_scale), font_weight="bold"
-                )
-                if title_font is None:
-                    title_font = get_font(
-                        "Jost", font_size=int(24 * font_scale), font_weight="normal"
-                    )
-
-                date_font = get_font(
-                    "Jost", font_size=int(16 * font_scale), font_weight="normal"
-                )
-                item_font = get_font(
-                    "Jost", font_size=int(14 * font_scale), font_weight="normal"
-                )
-                small_font = get_font(
-                    "Jost", font_size=int(12 * font_scale), font_weight="normal"
-                )
-
-                # Fallback to default if any font loading fails
-                if any(
-                    font is None
-                    for font in [title_font, date_font, item_font, small_font]
-                ):
-                    raise Exception("Font loading failed")
-
-            except Exception as e:
-                logger.warning(f"Font loading failed: {e}, using default font")
-                from PIL import ImageFont
-
-                title_font = ImageFont.load_default()
-                date_font = ImageFont.load_default()
-                item_font = ImageFont.load_default()
-                small_font = ImageFont.load_default()
-
-            # Layout
-            margin = 10
-            y_pos = margin
-
-            # Draw title
-            title_text = custom_title
-            title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
-            title_width = title_bbox[2] - title_bbox[0]
-            title_x = (width - title_width) // 2
-
-            draw.text((title_x, y_pos), title_text, font=title_font, fill=accent_color)
-            y_pos += title_bbox[3] - title_bbox[1] + 10
-
-            # Draw date if enabled and single day
-            if show_date and num_days == 1:
-                # For single day, show the full date
-                single_date = date.today()
-                date_text = single_date.strftime("%A, %B %d, %Y")
-                date_bbox = draw.textbbox((0, 0), date_text, font=date_font)
-                date_width = date_bbox[2] - date_bbox[0]
-                date_x = (width - date_width) // 2
-
-                draw.text((date_x, y_pos), date_text, font=date_font, fill=text_color)
-                y_pos += date_bbox[3] - date_bbox[1] + 15
-
-            # Draw separator line
-            line_y = y_pos
-            draw.line(
-                [(margin, line_y), (width - margin, line_y)], fill=accent_color, width=2
+            # Prepare template parameters
+            template_params = self._prepare_template_params(
+                menu_data, config, settings, device_config
             )
-            y_pos += 10
 
-            # Draw menu items for each day
-            from datetime import timedelta
+            # Render the image using HTML/CSS
+            image = self.render_image(
+                dimensions, "menu.html", "menu.css", template_params
+            )
 
-            base_date = date.today()
+            if not image:
+                raise RuntimeError("Failed to render menu image, please check logs.")
 
-            for day_index, (date_str, menu_items) in enumerate(menu_data.items()):
-                # Parse the date from string
-                menu_date = date.fromisoformat(date_str)
-
-                # Add day header if multiple days
-                if num_days > 1:
-                    if day_index > 0:
-                        y_pos += 10  # Extra space between days
-
-                    # Day header
-                    if menu_date == base_date:
-                        day_header = "Today"
-                    elif menu_date == base_date + timedelta(days=1):
-                        day_header = "Tomorrow"
-                    else:
-                        day_header = menu_date.strftime("%A")
-
-                    if show_date:
-                        day_header += f" ({menu_date.strftime('%m/%d')})"
-
-                    day_bbox = draw.textbbox((0, 0), day_header, font=date_font)
-                    day_height = day_bbox[3] - day_bbox[1]
-
-                    # Check if we have space
-                    if y_pos + day_height + 20 > height - margin:
-                        more_days = len(menu_data) - day_index
-                        more_text = f"... and {more_days} more day{'s' if more_days > 1 else ''}"
-                        draw.text(
-                            (margin, y_pos), more_text, font=small_font, fill=text_color
-                        )
-                        break
-
-                    draw.text(
-                        (margin, y_pos), day_header, font=date_font, fill=accent_color
-                    )
-                    y_pos += day_height + 5
-
-                # Draw menu items for this day
-                if not menu_items:
-                    no_menu_text = "No menu available"
-                    draw.text(
-                        (margin + 15, y_pos),
-                        no_menu_text,
-                        font=item_font,
-                        fill=text_color,
-                    )
-                    y_pos += draw.textbbox((0, 0), no_menu_text, font=item_font)[3] + 5
-                else:
-                    items_displayed = 0
-                    for item in menu_items:
-                        # Check if we have space for more items
-                        item_bbox = draw.textbbox((0, 0), item, font=item_font)
-                        item_height = item_bbox[3] - item_bbox[1]
-
-                        if (
-                            y_pos + item_height + 5 > height - margin - 30
-                        ):  # Reserve space for timestamp
-                            remaining = len(menu_items) - items_displayed
-                            if remaining > 0:
-                                more_text = f"... and {remaining} more items"
-                                draw.text(
-                                    (margin + 20, y_pos),
-                                    more_text,
-                                    font=small_font,
-                                    fill=text_color,
-                                )
-                            return img  # Exit early if no more space
-
-                        # Draw bullet point
-                        bullet_x = margin + (15 if num_days > 1 else 0)
-                        bullet_y = y_pos + (item_height // 2)
-                        draw.ellipse(
-                            [bullet_x, bullet_y - 2, bullet_x + 4, bullet_y + 2],
-                            fill=accent_color,
-                        )
-
-                        # Draw menu item
-                        text_x = bullet_x + 15
-                        draw.text(
-                            (text_x, y_pos), item, font=item_font, fill=text_color
-                        )
-                        y_pos += item_height + 3
-                        items_displayed += 1
-
-            # Add refresh time at bottom if there's space
-            if y_pos < height - 30:
-                timezone = device_config.get_config(
-                    "timezone", default="America/New_York"
-                )
-                time_format = device_config.get_config("time_format", default="12h")
-                tz = pytz.timezone(timezone)
-                now = datetime.now(tz)
-
-                if time_format == "12h":
-                    time_str = now.strftime("Updated: %I:%M %p")
-                else:
-                    time_str = now.strftime("Updated: %H:%M")
-
-                time_bbox = draw.textbbox((0, 0), time_str, font=small_font)
-                time_width = time_bbox[2] - time_bbox[0]
-                time_x = (width - time_width) // 2
-                time_y = height - margin - (time_bbox[3] - time_bbox[1])
-
-                draw.text((time_x, time_y), time_str, font=small_font, fill=text_color)
-
-            logger.info("School menu image generated successfully")
-            return img
+            logger.info("School menu image rendered successfully using HTML/CSS")
+            return image
 
         except Exception as e:
             logger.error(f"Error generating school menu image: {str(e)}")
             raise RuntimeError(f"Failed to generate school menu image: {str(e)}")
+
+    def _prepare_template_params(
+        self,
+        menu_data: Dict[str, List[str]],
+        config: dict,
+        settings: dict,
+        device_config,
+    ) -> dict:
+        """Prepare template parameters for HTML/CSS rendering"""
+        from datetime import date, timedelta
+
+        # Get current date info
+        today = date.today()
+        tomorrow = today + timedelta(days=1)
+        today_str = today.strftime("%Y-%m-%d")
+        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+
+        # Prepare formatted dates and day names
+        formatted_dates = {}
+        day_names = {}
+
+        for date_str in menu_data.keys():
+            menu_date = date.fromisoformat(date_str)
+            formatted_dates[date_str] = menu_date.strftime("%m/%d")
+            day_names[date_str] = menu_date.strftime("%A")
+
+        # Single day date text
+        single_date_text = ""
+        if len(menu_data) == 1:
+            single_date = today
+            single_date_text = single_date.strftime("%A, %B %d, %Y")
+
+        # Get timezone and time format for timestamp
+        timezone = device_config.get_config("timezone", default="America/New_York")
+        time_format = device_config.get_config("time_format", default="12h")
+
+        timestamp = ""
+        show_timestamp = True
+        try:
+            import pytz
+
+            tz = pytz.timezone(timezone)
+            now = datetime.now(tz)
+
+            if time_format == "12h":
+                timestamp = now.strftime("%I:%M %p")
+            else:
+                timestamp = now.strftime("%H:%M")
+        except Exception as e:
+            logger.warning(f"Error generating timestamp: {e}")
+            show_timestamp = False
+
+        return {
+            "menu_data": menu_data,
+            "plugin_settings": settings,
+            "font_scale": config["font_scale"],
+            "today_str": today_str,
+            "tomorrow_str": tomorrow_str,
+            "formatted_dates": formatted_dates,
+            "day_names": day_names,
+            "single_date_text": single_date_text,
+            "timestamp": timestamp,
+            "show_timestamp": show_timestamp,
+        }
+
+    def _parse_settings(self, settings: dict) -> dict:
+        """Parse and validate plugin settings"""
+        menu_id = settings.get("menuId", "").strip()
+        site_code = settings.get("siteCode", "").strip() or None
+        num_days = int(settings.get("numDays", 1))
+        show_date = settings.get("showDate", True)
+        custom_title = settings.get("customTitle", "School Lunch Menu")
+        font_size = settings.get("fontSize", "normal")
+
+        # Validate num_days
+        if not self._is_valid_day_count(num_days):
+            num_days = 1
+
+        return {
+            "menu_id": menu_id,
+            "site_code": site_code,
+            "num_days": num_days,
+            "show_date": show_date,
+            "custom_title": custom_title,
+            "font_size": font_size,
+            "font_scale": FONT_SIZES.get(font_size, 1.0),
+        }

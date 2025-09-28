@@ -1,7 +1,13 @@
 <div class="form-group">
-    <label for="menuUrl" class="form-label">Menu URL:</label>
-    <input type="url" id="menuUrl" name="menuUrl" class="form-input" placeholder="https://example.com/school-menu" />
-    <small class="form-help">Enter the URL where the menu data can be found. Leave blank to use mock data.</small>
+    <label for="menuId" class="form-label">Menu ID:</label>
+    <input type="text" id="menuId" name="menuId" class="form-input" placeholder="68750f9b40a2c835145a7cc2" />
+    <small class="form-help">Enter the menu ID from the School Nutrition website URL (the part after 'id=').</small>
+</div>
+
+<div class="form-group">
+    <label for="siteCode" class="form-label">Site Code (Optional):</label>
+    <input type="text" id="siteCode" name="siteCode" class="form-input" placeholder="894" />
+    <small class="form-help">Enter the site code if present in the URL (the part after 'siteCode='). Leave blank if not needed.</small>
 </div>
 
 <div class="form-group">
@@ -47,46 +53,98 @@
 </div>
 
 <script>
-    // Set default values on page load
+    // Set default values on page load or populate with existing settings
     document.addEventListener('DOMContentLoaded', function() {
-        // Set default number of days to 1
+        // Check if we're editing an existing instance (pluginSettings will be available)
+        const isEditing = typeof pluginSettings !== 'undefined' && Object.keys(pluginSettings).length > 0;
+        
+        // Menu ID
+        const menuIdInput = document.getElementById('menuId');
+        if (menuIdInput) {
+            if (isEditing && pluginSettings.menuId) {
+                menuIdInput.value = pluginSettings.menuId;
+            }
+        }
+        
+        // Site Code
+        const siteCodeInput = document.getElementById('siteCode');
+        if (siteCodeInput) {
+            if (isEditing && pluginSettings.siteCode) {
+                siteCodeInput.value = pluginSettings.siteCode;
+            }
+        }
+        
+        // Number of days
         const numDaysSelect = document.getElementById('numDays');
-        if (numDaysSelect && !numDaysSelect.value) {
-            numDaysSelect.value = '1';
+        if (numDaysSelect) {
+            if (isEditing && pluginSettings.numDays) {
+                numDaysSelect.value = pluginSettings.numDays;
+            } else if (!numDaysSelect.value) {
+                numDaysSelect.value = '1';
+            }
         }
         
-        // Set default custom title
+        // Custom title
         const customTitleInput = document.getElementById('customTitle');
-        if (customTitleInput && !customTitleInput.value) {
-            customTitleInput.value = 'School Lunch Menu';
+        if (customTitleInput) {
+            if (isEditing && pluginSettings.customTitle) {
+                customTitleInput.value = pluginSettings.customTitle;
+            } else if (!customTitleInput.value) {
+                customTitleInput.value = 'School Lunch Menu';
+            }
         }
         
-        // Set default font size to normal
+        // Font size
         const fontSizeSelect = document.getElementById('fontSize');
-        if (fontSizeSelect && !fontSizeSelect.value) {
-            fontSizeSelect.value = 'normal';
+        if (fontSizeSelect) {
+            if (isEditing && pluginSettings.fontSize) {
+                fontSizeSelect.value = pluginSettings.fontSize;
+            } else if (!fontSizeSelect.value) {
+                fontSizeSelect.value = 'normal';
+            }
         }
         
-        // Set default show date to checked
+        // Show date checkbox
         const showDateCheckbox = document.getElementById('showDate');
         if (showDateCheckbox) {
-            showDateCheckbox.checked = true;
-            showDateCheckbox.value = 'true';
+            if (isEditing && typeof pluginSettings.showDate !== 'undefined') {
+                const showDateValue = pluginSettings.showDate === 'true' || pluginSettings.showDate === true;
+                showDateCheckbox.checked = showDateValue;
+                showDateCheckbox.value = showDateValue ? 'true' : 'false';
+            } else {
+                showDateCheckbox.checked = true;
+                showDateCheckbox.value = 'true';
+            }
         }
         
-        // Add help text behavior for URL field
-        const urlInput = document.getElementById('menuUrl');
-        const numDaysField = document.getElementById('numDays');
-        
-        // Show/hide advanced options based on URL input
-        function toggleAdvancedOptions() {
-            const hasUrl = urlInput.value.trim().length > 0;
-            // You could add logic here to show/hide additional parsing options
+        // Display refresh time checkbox
+        const displayRefreshTimeCheckbox = document.getElementById('displayRefreshTime');
+        if (displayRefreshTimeCheckbox) {
+            if (isEditing && typeof pluginSettings.displayRefreshTime !== 'undefined') {
+                const displayRefreshTimeValue = pluginSettings.displayRefreshTime === 'true' || pluginSettings.displayRefreshTime === true;
+                displayRefreshTimeCheckbox.checked = displayRefreshTimeValue;
+                displayRefreshTimeCheckbox.value = displayRefreshTimeValue ? 'true' : 'false';
+            } else {
+                displayRefreshTimeCheckbox.checked = false;
+                displayRefreshTimeCheckbox.value = 'false';
+            }
         }
         
-        if (urlInput) {
-            urlInput.addEventListener('input', toggleAdvancedOptions);
-            toggleAdvancedOptions(); // Initial check
+        // Add validation for menu ID field
+        const menuIdField = document.getElementById('menuId');
+        
+        function validateMenuId() {
+            const menuId = menuIdField.value.trim();
+            if (menuId && menuId.length < 10) {
+                menuIdField.setCustomValidity('Menu ID should be at least 10 characters long');
+            } else {
+                menuIdField.setCustomValidity('');
+            }
+        }
+        
+        if (menuIdField) {
+            menuIdField.addEventListener('input', validateMenuId);
+            validateMenuId(); // Initial validation
         }
     });
 </script>
