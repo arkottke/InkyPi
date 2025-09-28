@@ -25,10 +25,13 @@ logger = logging.getLogger(__name__)
 
 # Font scaling options
 FONT_SIZES = {
+    "x-small": 0.6,
+    "smaller": 0.7,
     "small": 0.8,
     "normal": 1.0,
     "large": 1.2,
-    "extra_large": 1.4,
+    "larger": 1.4,
+    "x-large": 1.6,
 }
 
 # Standard lunch items to filter out
@@ -471,6 +474,7 @@ class SchoolMenu(BasePlugin):
         show_date = settings.get("showDate", True)
         custom_title = settings.get("customTitle", "School Lunch Menu")
         font_size = settings.get("fontSize", "normal")
+        font_scale = FONT_SIZES.get(font_size, 1.0)
 
         # Validate num_days
         if not self._is_valid_day_count(num_days):
@@ -483,5 +487,5 @@ class SchoolMenu(BasePlugin):
             "show_date": show_date,
             "custom_title": custom_title,
             "font_size": font_size,
-            "font_scale": FONT_SIZES.get(font_size, 1.0),
+            "font_scale": font_scale,
         }
