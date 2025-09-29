@@ -58,6 +58,23 @@
             },
             slotDuration: "01:00:00"
         });
+
+        // Add event location display for list view
+        const displayLocation = {{ (plugin_settings.displayLocation == "true") | tojson }};
+        if (displayLocation) {
+            calendar.on('eventDidMount', function(info) {
+                if (info.event.extendedProps.location && info.view.type === 'listMonth') {
+                    const locationEl = document.createElement('div');
+                    locationEl.classList.add('fc-list-event-location');
+                    locationEl.innerHTML = '📍 ' + info.event.extendedProps.location;
+                    const titleEl = info.el.querySelector('.fc-list-event-title');
+                    if (titleEl) {
+                        titleEl.appendChild(locationEl);
+                    }
+                }
+            });
+        }
+
         calendar.render();
     });
 </script>
