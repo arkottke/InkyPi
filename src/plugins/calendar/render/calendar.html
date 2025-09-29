@@ -56,24 +56,27 @@
                 center: "{{ 'title' if plugin_settings.displayTitle == 'true' else '' }}",
                 right: ''
             },
-            slotDuration: "01:00:00"
-        });
-
-        // Add event location display for list view
-        const displayLocation = {{ (plugin_settings.displayLocation == "true") | tojson }};
-        if (displayLocation) {
-            calendar.on('eventDidMount', function(info) {
-                if (info.event.extendedProps.location && info.view.type === 'listMonth') {
+            slotDuration: "01:00:00",
+            eventDidMount: function(info) {
+                console.log('Event mounted:', info.event.title, 'Location:', info.event.extendedProps.location);
+                const displayLocation = {{ (plugin_settings.displayLocation == "true") | tojson }};
+                if (displayLocation && info.event.extendedProps.location && info.view.type === 'listMonth') {
+                    // Extract only the part before the first comma
+                    const fullLocation = info.event.extendedProps.location;
+                    const shortLocation = fullLocation.split(',')[0].trim();
+                    
                     const locationEl = document.createElement('div');
                     locationEl.classList.add('fc-list-event-location');
-                    locationEl.innerHTML = '📍 ' + info.event.extendedProps.location;
-                    const titleEl = info.el.querySelector('.fc-list-event-title');
-                    if (titleEl) {
-                        titleEl.appendChild(locationEl);
+                    locationEl.innerHTML = '▸ ' + shortLocation;
+                    
+                    // Find the event title element and append location directly to it
+                    const eventTitleEl = info.el.querySelector('.fc-list-event-title');
+                    if (eventTitleEl) {
+                        eventTitleEl.appendChild(locationEl);
                     }
                 }
-            });
-        }
+            }
+        });
 
         calendar.render();
     });

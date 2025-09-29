@@ -68,10 +68,11 @@ th {
   font-size: var(--fc-table-font-size) !important;
 }
 
-/* List view location styling */
 .fc-list-event-location {
   font-size: var(--fc-small-font-size) !important;
   color: #666 !important;
-  margin-top: 2px;
   font-style: italic;
+  display: block;
+  margin-top: 2px;
+  line-height: 1.1;
 }

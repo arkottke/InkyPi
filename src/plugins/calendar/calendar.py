@@ -93,15 +93,22 @@ class Calendar(BasePlugin):
                 if end:
                     parsed_event["end"] = end
 
+                # Add location to extendedProps for FullCalendar
+                extended_props = {}
                 if "LOCATION" in event:
                     location = event.decoded("LOCATION")
                     if location:
-                        parsed_event["location"] = str(
+                        location_str = str(
                             location.decode("utf-8")
                             if isinstance(location, bytes)
                             else location
                         )
+                        extended_props["location"] = location_str
 
+                if extended_props:
+                    parsed_event["extendedProps"] = extended_props
+
+                print(parsed_event)
                 parsed_events.append(parsed_event)
 
         return parsed_events
