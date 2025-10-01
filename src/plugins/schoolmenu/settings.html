@@ -1,13 +1,13 @@
 <div class="form-group">
-    <label for="menuId" class="form-label">Menu ID:</label>
-    <input type="text" id="menuId" name="menuId" class="form-input" placeholder="68750f9b40a2c835145a7cc2" />
-    <small class="form-help">Enter the menu ID from the School Nutrition website URL (the part after 'id=').</small>
+    <label for="siteCode" class="form-label">Site Code:</label>
+    <input type="text" id="siteCode" name="siteCode" class="form-input" placeholder="894" required />
+    <small class="form-help">Enter the site code from your school's nutrition website URL (the part after 'siteCode='). The plugin will automatically find the current month's menu.</small>
 </div>
 
 <div class="form-group">
-    <label for="siteCode" class="form-label">Site Code (Optional):</label>
-    <input type="text" id="siteCode" name="siteCode" class="form-input" placeholder="894" />
-    <small class="form-help">Enter the site code if present in the URL (the part after 'siteCode='). Leave blank if not needed.</small>
+    <label for="menuId" class="form-label">Manual Menu ID (Optional):</label>
+    <input type="text" id="menuId" name="menuId" class="form-input" placeholder="Leave blank for auto-detection" />
+    <small class="form-help">Leave blank to auto-detect current menu, or enter a specific menu ID to override auto-detection.</small>
 </div>
 
 <div class="form-group">
