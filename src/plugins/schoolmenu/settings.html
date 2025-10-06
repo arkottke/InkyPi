@@ -1,13 +1,24 @@
 <div class="form-group">
-    <label for="siteCode" class="form-label">Site Code:</label>
-    <input type="text" id="siteCode" name="siteCode" class="form-input" placeholder="894" required />
-    <small class="form-help">Enter the site code from your school's nutrition website URL (the part after 'siteCode='). The plugin will automatically find the current month's menu.</small>
+    <label for="districtId" class="form-label">District ID:</label>
+    <input type="text" id="districtId" name="districtId" class="form-input" placeholder="1212122355243477" required />
+    <small class="form-help"><strong>For Albany Unified School District, use:</strong> <code>1212122355243477</code><br>
+    <strong>To find your district ID:</strong><br>
+    1. Visit your school's nutrition website<br>
+    2. Look in the URL after "downloadMenu.php/" for the first long number<br>
+    Example: downloadMenu.php/<strong>1212122355243477</strong>/815216</small>
 </div>
 
 <div class="form-group">
-    <label for="menuId" class="form-label">Manual Menu ID (Optional):</label>
-    <input type="text" id="menuId" name="menuId" class="form-input" placeholder="Leave blank for auto-detection" />
-    <small class="form-help">Leave blank to auto-detect current menu, or enter a specific menu ID to override auto-detection.</small>
+    <label for="schoolId" class="form-label">School ID:</label>
+    <input type="text" id="schoolId" name="schoolId" class="form-input" placeholder="894" required />
+    <small class="form-help"><strong>For your specific school, find the number at the end of the menu URL.</strong><br>
+        Example: webmenus2/#/view?id=68750fc5a6982437271373fa&siteCode=<strong>894</strong><br>
+    This ensures you get the exact menu for your school.</small>
+</div>
+
+<div class="form-group">
+    <label for="menuName" class="form-label">Menu Name:</label>
+    <input type="text" id="menuName" name="menuName" class="form-input" placeholder="Lunch Elementary Schools" />
 </div>
 
 <div class="form-group">
@@ -25,6 +36,7 @@
     <label for="customTitle" class="form-label">Custom Title:</label>
     <input type="text" id="customTitle" name="customTitle" class="form-input" value="School Lunch Menu" placeholder="School Lunch Menu" />
 </div>
+
 
 <div class="form-group">
     <label for="fontSize" class="form-label">Font Size:</label>

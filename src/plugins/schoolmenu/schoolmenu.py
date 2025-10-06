@@ -1,19 +1,19 @@
-"""
-School Menu Plugin for InkyPi
-Displays school lunch menu information from a School Nutrition website GraphQL API.
+"""SchoolMenu plugin (GraphQL based).
 
-This plugin fetches real menu data from School Nutrition and Fitness websites using GraphQL API.
+Identity of a specific published menu is determined by three required fields:
+    site_id        (depth_0 site / district)
+    menu_name      (human readable menu type, e.g. "Lunch Elementary Schools")
+    site_child_id  (depth_1 site / school)
 
-Settings:
-- menuId: Menu ID from the School Nutrition website URL (e.g., 68750f9b40a2c835145a7cc2)
-- siteCode: Optional site code if present in URL (e.g., 894)
-- numDays: Number of days to display (1-5)
-- customTitle: Custom title for the menu display
-- fontSize: Font size for menu items
-- showDate: Whether to show dates
+This implementation fetches the currently published month for the given menu
+name and renders the next N school days using the Jinja template in
+`render/menu.html` with associated CSS.
 """
+
+from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -23,8 +23,11 @@ from plugins.base_plugin.base_plugin import BasePlugin
 
 logger = logging.getLogger(__name__)
 
-# Font scaling options
-FONT_SIZES = {
+# ---------------------------------------------------------------------------
+# Constants / Config
+# ---------------------------------------------------------------------------
+GQL_ENDPOINT = "https://api.isitesoftware.com/graphql"
+FONT_SIZES: Dict[str, float] = {
     "x-small": 0.6,
     "smaller": 0.7,
     "small": 0.8,
@@ -33,835 +36,345 @@ FONT_SIZES = {
     "larger": 1.4,
     "x-large": 1.6,
 }
-
-# Standard lunch items to filter out
-STANDARD_ITEMS = [
-    "Garden Bar",
-    "Organic Fresh Fruits and Veggies",
-    "Straus Organic 1% Milk",
-    "Non-fat milk",
-    "Low-fat Milk",
-    "Milk",
-    "Garden Bar: Fresh Fruits and Veggies",
-]
-
-# API Configuration
-GRAPHQL_API_URL = "https://api.isitesoftware.com/graphql"
-API_TIMEOUT = 15
-
-# Menu discovery URL patterns
-MENU_DISCOVERY_URL = "https://www.schoolnutritionandfitness.com/webmenus2/api/menus"
-MAX_DAYS = 5
 MIN_DAYS = 1
+MAX_DAYS = 5
+PENDING_TEXT = "Not yet published"
+
+# Items that are considered boilerplate / ubiquitous accompaniments and should
+# be hidden from the rendered menu. These are matched on a normalized (lower
+# case, collapsed whitespace) exact basis. Expand this list as needed.
+COMMON_MENU_ITEM_FILTER = {
+    "Garden Bar:",
+    "organic fresh fruits and veggies",
+    "straus organic 1% milk",
+    "non-fat milk",
+}
+
+
+# ---------------------------------------------------------------------------
+# GraphQL helper (embedded minimal subset of previous graphql_menus.py)
+# ---------------------------------------------------------------------------
+class GraphQLError(RuntimeError):
+    pass
+
+
+def _post_graphql(query: str) -> dict:
+    params = {"query": query}
+    resp = requests.post(GQL_ENDPOINT, params=params, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    if "errors" in payload:
+        raise GraphQLError(str(payload["errors"]))
+    return payload.get("data", {})
+
+
+def _normalize_name(name: str) -> str:
+    import re
+
+    return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def _build_site_input(district_id: str, school_id: Optional[str]) -> str:
+    parts = [f'depth_0_id:"{district_id}"']
+    if school_id:
+        parts.append(f'depth_1_id:"{school_id}"')
+    return "{" + ",".join(parts) + "}"
+
+
+def _validate_site_in_district(district_id: str, school_id: str) -> None:
+    """Raise ValueError if the school_id is not part of the district.
+
+    Uses a lightweight query that enumerates top-level sites for the org.
+    """
+    query = f'{{  organization(id:"{district_id}") {{ id sites {{ id name }} }}}}'
+    data = _post_graphql(query).get("organization") or {}
+    schools = data.get("sites") or []
+    school_ids = {s.get("id") for s in schools}
+    if school_id not in school_ids:
+        raise ValueError(
+            f"School id {school_id} not found in organization {district_id}. Available: {sorted(school_ids)}"
+        )
+
+
+def fetch_menu_items(
+    district_id: str, site_id: str, menu_name: str, publish_location: str = "website"
+) -> Dict[str, List[str]]:
+    """Return mapping date -> list of product names for the current published month.
+
+    Parameters
+    ----------
+    district_id: str
+        ID of the district (e.g., 1212122355243477)
+    site_id: str
+        ID of the school (e.g., 894)
+    menu_name : str
+        Human-readable menu name (e.g. "Lunch Elementary Schools").
+    publish_location : str
+        The location where the menu is published (e.g. "website").
+
+    Returns
+    -------
+    dict[str, list[str]]
+        ISO date (YYYY-MM-DD) keys in chronological order, each value a list of item names.
+    """
+    if district_id:
+        _validate_site_in_district(district_id, site_id)
+
+    site_input = "{" + f'depth_0_id:"{site_id}"' + "}"
+
+    # 1. Fetch menuTypes for site to resolve name -> menuType id
+    query_menu_types = (
+        "{"
+        f'  menuTypes(site:{site_input}, publish_location:"{publish_location}") {{ id name }}'
+        "}"
+    )
+    mt_data = _post_graphql(query_menu_types)
+    menu_types = mt_data.get("menuTypes") or []
+    if not menu_types:
+        raise ValueError("No menuTypes returned for site; cannot resolve menu name.")
+
+    target = _normalize_name(menu_name)
+    exact = [mt for mt in menu_types if _normalize_name(mt.get("name", "")) == target]
+    if len(exact) == 1:
+        menu_type_id = exact[0]["id"]
+    elif len(exact) > 1:
+        raise ValueError(f"Ambiguous menu name '{menu_name}' (multiple exact matches)")
+    else:
+        partial = [
+            mt for mt in menu_types if target in _normalize_name(mt.get("name", ""))
+        ]
+        if len(partial) == 1:
+            menu_type_id = partial[0]["id"]
+        elif not partial:
+            raise ValueError(
+                f"Menu name '{menu_name}' not found. Available: {[mt.get('name') for mt in menu_types]}"
+            )
+        else:
+            raise ValueError(
+                f"Ambiguous menu name '{menu_name}'. Candidates: {[mt.get('name') for mt in partial]}"
+            )
+
+    # 2. Fetch defaultPublishedMonth id for that menuType
+    query_default_month = (
+        f'{{  menuType(id:"{menu_type_id}") {{ defaultPublishedMonth {{ id }} }}}}'
+    )
+    mt_meta = _post_graphql(query_default_month).get("menuType") or {}
+    month_info = mt_meta.get("defaultPublishedMonth") or {}
+    menu_id = month_info.get("id")
+    if not menu_id:
+        raise ValueError(f"Menu '{menu_name}' has no currently published month.")
+
+    # 3. Fetch the menu items (minimal fields)
+    query_menu = (
+        "{"
+        f'  menu(id:"{menu_id}") {{ id month year items {{ day month year product {{ name }} }} }}'
+        "}"
+    )
+    menu_payload = _post_graphql(query_menu).get("menu") or {}
+    items = menu_payload.get("items") or []
+    top_month_idx = menu_payload.get("month")  # zero-based
+    top_year = menu_payload.get("year")
+
+    by_date: Dict[str, List[str]] = {}
+    for it in items:
+        # Month resolution
+        raw_item_month = it.get("month")
+        if isinstance(raw_item_month, int):
+            month_num = raw_item_month + 1
+        elif isinstance(top_month_idx, int):
+            month_num = top_month_idx + 1
+        else:
+            # Skip if month cannot be resolved
+            continue
+        year_val = it.get("year") or top_year
+        if not isinstance(year_val, int):
+            continue
+        day_raw = it.get("day")
+        try:
+            day_int = int(day_raw)
+        except Exception:
+            continue
+        date_key = f"{year_val}-{month_num:02d}-{day_int:02d}"
+        prod = it.get("product") or {}
+        name = prod.get("name")
+        if not name:
+            continue
+        # Filter out ubiquitous / condiment / generic sides defined above
+        norm_name = _normalize_name(name)
+        print(norm_name)
+        if norm_name in COMMON_MENU_ITEM_FILTER:
+            continue
+        by_date.setdefault(date_key, []).append(name)
+
+    # Ensure chronological ordering (Python preserves insertion order)
+    ordered: Dict[str, List[str]] = {}
+    for k in sorted(by_date):
+        ordered[k] = by_date[k]
+    # Drop any dates that became empty after filtering
+    filtered = {k: v for k, v in ordered.items() if v}
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# Data structures / helpers
+# ---------------------------------------------------------------------------
+@dataclass
+class ParsedSettings:
+    district_id: str
+    school_id: str
+    menu_name: str
+    days: int
+    title: str
+    show_date: bool
+    font_scale: float
+    primary_color: str
+    text_color: str
+    background_color: str
+    show_timestamp: bool
 
 
 class SchoolMenu(BasePlugin):
-    """Plugin to display school lunch menu"""
+    def generate_settings_template(self):  # type: ignore[override]
+        params = super().generate_settings_template()
+        params["style_settings"] = "True"
+        return params
 
-    def __init__(self, config, **dependencies):
-        super().__init__(config, **dependencies)
-        # Initialize menu parser - no more mock data
+    # ---------------------------------------------------------------------
+    # Public entry
+    # ---------------------------------------------------------------------
+    def generate_image(self, settings, device_config):  # type: ignore[override]
+        cfg = self._parse_settings(settings)
+        logger.debug("Parsed settings: %s", cfg)
 
-    def generate_settings_template(self):
-        """Generate settings template parameters"""
-        template_params = super().generate_settings_template()
-        template_params["style_settings"] = "True"
-        return template_params
-
-    def get_menu_for_days(
-        self,
-        num_days: int,
-        menu_id: Optional[str] = None,
-        site_code: Optional[str] = None,
-    ) -> Dict[str, List[str]]:
-        """Get menu items for the specified number of days starting from today"""
-        logger.info(
-            f"DEBUG: get_menu_for_days called with num_days={num_days}, menu_id={menu_id}, site_code={site_code}"
-        )
-
-        if not self._is_valid_day_count(num_days):
-            raise ValueError(
-                f"Number of days must be between {MIN_DAYS} and {MAX_DAYS}"
-            )
-
-        if site_code:
-            logger.info("DEBUG: site_code provided, using auto-discovery for multi-month support")
-            temp_settings = {
-                "siteCode": site_code,
-                "numDays": num_days,
-                "menuId": menu_id  # Optional fallback
-            }
-            discovered_data = self._discover_and_fetch_menus(temp_settings)
-            if discovered_data:
-                return self._process_discovered_menu_data(discovered_data, num_days)
-            
-            # Fallback to manual menu ID if auto-discovery fails
-            if menu_id:
-                logger.warning("Auto-discovery failed, falling back to manual menu ID")
-                return self._fetch_menu_from_api(num_days, menu_id, site_code)
-        elif menu_id:
-            logger.info("DEBUG: Only menu_id provided, using single menu approach")
-            return self._fetch_menu_from_api(num_days, menu_id, site_code)
-        else:
-            logger.error("DEBUG: Neither site_code nor menu_id provided")
-            
-        # Fallback: return empty menu if all methods fail
-        return self._get_empty_menu_for_days(num_days)
-
-    def _is_valid_day_count(self, num_days: int) -> bool:
-        """Validate the number of days parameter"""
-        return MIN_DAYS <= num_days <= MAX_DAYS
-
-    def _fetch_menu_from_api(
-        self, num_days: int, menu_id: str, site_code: Optional[str] = None
-    ) -> Dict[str, List[str]]:
-        """Fetch menu from the GraphQL API using menu ID"""
+        # Fetch menu data via GraphQL. If it fails, fallback to placeholder.
+        fetch_ok = True
         try:
-            if not menu_id:
-                raise ValueError("Menu ID is not provided")
-
-            logger.info(f"Fetching menu data for ID: {menu_id}")
-            if site_code:
-                logger.info(f"Using site code: {site_code}")
-
-            # Build GraphQL query
-            graphql_query = self._build_menu_query(menu_id)
-
-            # Make the GraphQL request
-            response = requests.post(
-                GRAPHQL_API_URL,
-                json=graphql_query,
-                headers=self._get_api_headers(),
-                timeout=API_TIMEOUT,
+            # Order: district_id, school_id, menu_name (positional to avoid duplication)
+            all_items = fetch_menu_items(
+                cfg.district_id,
+                cfg.school_id,
+                cfg.menu_name,
             )
+        except Exception as e:  # pragma: no cover
+            fetch_ok = False
+            logger.warning("GraphQL fetch failed: %s", e)
+            today_iso = date.today().isoformat()
+            all_items = {today_iso: ["Menu not available"]}
 
-            if response.status_code != 200:
-                logger.error(f"GraphQL API returned status {response.status_code}")
-                logger.error(f"Response content: {response.text}")
-                return self._get_empty_menu_for_days(num_days)
-
-            data = response.json()
-
-            if "errors" in data:
-                logger.error(f"GraphQL errors: {data['errors']}")
-                return self._get_empty_menu_for_days(num_days)
-
-            if not data.get("data", {}).get("menu"):
-                logger.error("No menu data returned from API")
-                logger.error(f"DEBUG: Full response: {data}")
-                return self._get_empty_menu_for_days(num_days)
-
-            menu = data["data"]["menu"]
-            return self._parse_graphql_menu_data(menu, num_days)
-
-        except Exception as e:
-            logger.error(f"Error fetching menu from API: {e}")
-            return self._get_empty_menu_for_days(num_days)
-
-    def _build_menu_query(self, menu_id: str) -> dict:
-        """Build GraphQL query for menu data"""
-        return {
-            "query": """query {
-                menu(id: \"%s\") {
-                    name
-                    month
-                    year
-                    items {
-                        day
-                        month
-                        year
-                        date
-                        product {
-                            name
-                        }
-                    }
-                }
-            }"""
-            % menu_id
-        }
-
-    def _get_api_headers(self) -> dict:
-        """Get headers for API requests"""
-        return {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        }
-
-    def _discover_current_menu(self, site_code: str, num_days: int) -> Optional[Dict[str, List[str]]]:
-        """Discover current menu by site code"""
-        try:
-            logger.info(f"Attempting to discover current menu for site code: {site_code}")
-            
-            # Try to find menus for this site using GraphQL
-            discovery_query = {
-                "query": """query {
-                    menus(siteCode: \"%s\") {
-                        id
-                        name
-                        month
-                        year
-                        siteCode
-                    }
-                }""" % site_code
-            }
-            
-            response = requests.post(
-                GRAPHQL_API_URL,
-                json=discovery_query,
-                headers=self._get_api_headers(),
-                timeout=API_TIMEOUT,
-            )
-            
-            if response.status_code != 200:
-                logger.warning(f"Menu discovery failed with status {response.status_code}")
-                return None
-                
-            data = response.json()
-            
-            if "errors" in data:
-                logger.warning(f"Menu discovery GraphQL errors: {data['errors']}")
-                return None
-                
-            menus = data.get("data", {}).get("menus", [])
-            if not menus:
-                logger.warning(f"No menus found for site code {site_code}")
-                return None
-            
-            # Find the menu for current month/year
-            current_date = date.today()
-            current_month = current_date.month
-            current_year = current_date.year
-            
-            logger.info(f"Looking for menu for {current_month}/{current_year}")
-            
-            # Look for exact match first
-            for menu in menus:
-                if menu.get("month") == current_month and menu.get("year") == current_year:
-                    menu_id = menu.get("id")
-                    logger.info(f"Found current month menu: {menu_id}")
-                    return self._fetch_menu_from_api(num_days, menu_id, site_code)
-            
-            # Look for adjacent months if no exact match
-            for menu in menus:
-                menu_month = menu.get("month")
-                menu_year = menu.get("year")
-                if (menu_year == current_year and 
-                    menu_month and abs(menu_month - current_month) <= 1):
-                    menu_id = menu.get("id")
-                    logger.info(f"Found adjacent month menu ({menu_month}/{menu_year}): {menu_id}")
-                    return self._fetch_menu_from_api(num_days, menu_id, site_code)
-            
-            # If no suitable menu found, try the most recent one
-            if menus:
-                latest_menu = max(menus, key=lambda m: (m.get("year", 0), m.get("month", 0)))
-                menu_id = latest_menu.get("id")
-                logger.info(f"Using latest available menu: {menu_id} ({latest_menu.get('month')}/{latest_menu.get('year')})")
-                return self._fetch_menu_from_api(num_days, menu_id, site_code)
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error during menu discovery: {e}")
-            return None
-
-    def _discover_and_fetch_menus(self, settings: Dict) -> Optional[Dict]:
-        """
-        Discover available menus using site code and fetch appropriate menu data.
-        """
-        site_code = settings.get("siteCode")
-        if not site_code:
-            logger.warning("No site code provided for menu discovery")
-            return None
-        
-        # Get available menus for the site
-        available_menus = self._get_available_menus(site_code)
-        if not available_menus:
-            logger.warning(f"No menus found for site code: {site_code}")
-            return None
-        
-        # Get the date range we need to cover
-        start_date = date.today()
-        num_days = int(settings.get("numDays", 5))
-        end_date = self._get_end_date_for_days(start_date, num_days)
-        
-        # Get all months we need to cover
-        months_needed = self._get_months_in_range(start_date, end_date)
-        
-        # Find menus for each month and collect all menu data
-        all_menu_data = []
-        
-        for year, month in months_needed:
-            menu_id = self._find_menu_for_month(available_menus, year, month)
-            if menu_id:
-                logger.info(f"Found menu ID {menu_id} for {year}-{month:02d}")
-                # Create temporary settings with this menu ID
-                temp_settings = settings.copy()
-                temp_settings["menuId"] = menu_id
-                
-                menu_data = self._fetch_menu_data(temp_settings)
-                if menu_data and "data" in menu_data and "menusByLocation" in menu_data["data"]:
-                    # Extract menu items and add to collection
-                    menus = menu_data["data"]["menusByLocation"]
-                    if menus:
-                        all_menu_data.extend(menus)
+        # Filter upcoming school days
+        target_days = self._next_school_days(cfg.days)
+        menu_subset: Dict[str, List[str]] = {}
+        for d in target_days:
+            iso = d.isoformat()
+            if iso in all_items:
+                menu_subset[iso] = all_items[iso]
             else:
-                logger.warning(f"No menu found for {year}-{month:02d}")
-        
-        if all_menu_data:
-            # Return in the expected format
-            return {
-                "data": {
-                    "menusByLocation": all_menu_data
-                }
-            }
-        
-        return None
-
-    def _fetch_menu_data(self, settings: Dict) -> Optional[Dict]:
-        """Fetch menu data using the menusByLocation GraphQL query"""
-        menu_id = settings.get("menuId")
-        if not menu_id:
-            logger.error("No menu ID provided for fetching menu data")
-            return None
-        
-        try:
-            # Build GraphQL query for menusByLocation
-            graphql_query = {
-                "query": """query {
-                    menusByLocation(id: \"%s\") {
-                        name
-                        month
-                        year
-                        items {
-                            day
-                            month
-                            year
-                            date
-                            product {
-                                name
-                            }
-                        }
-                    }
-                }""" % menu_id
-            }
-            
-            # Make the GraphQL request
-            response = requests.post(
-                GRAPHQL_API_URL,
-                json=graphql_query,
-                headers=self._get_api_headers(),
-                timeout=API_TIMEOUT,
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"GraphQL API returned status {response.status_code}")
-                return None
-            
-            data = response.json()
-            
-            if "errors" in data:
-                logger.error(f"GraphQL errors: {data['errors']}")
-                return None
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Error fetching menu data: {e}")
-            return None
-
-    def _get_available_menus(self, site_code: str) -> List[dict]:
-        """Get all available menus for a site code"""
-        try:
-            discovery_query = {
-                "query": """query {
-                    menus(siteCode: \"%s\") {
-                        id
-                        name
-                        month
-                        year
-                        siteCode
-                    }
-                }""" % site_code
-            }
-            
-            response = requests.post(
-                GRAPHQL_API_URL,
-                json=discovery_query,
-                headers=self._get_api_headers(),
-                timeout=API_TIMEOUT,
-            )
-            
-            if response.status_code != 200:
-                logger.warning(f"Failed to fetch available menus: {response.status_code}")
-                return []
-                
-            data = response.json()
-            
-            if "errors" in data:
-                logger.warning(f"GraphQL errors fetching menus: {data['errors']}")
-                return []
-                
-            menus = data.get("data", {}).get("menus", [])
-            logger.info(f"Found {len(menus)} available menus for site {site_code}")
-            return menus
-            
-        except Exception as e:
-            logger.error(f"Error fetching available menus: {e}")
-            return []
-
-    def _get_end_date_for_days(self, start_date: date, num_days: int) -> date:
-        """Calculate end date for the requested number of school days"""
-        current_date = start_date
-        days_counted = 0
-        
-        while days_counted < num_days:
-            if self._is_school_day(current_date):
-                days_counted += 1
-                if days_counted == num_days:
-                    return current_date
-            current_date += timedelta(days=1)
-        
-        return current_date
-
-    def _get_months_in_range(self, start_date: date, end_date: date) -> List[tuple]:
-        """Get all (year, month) tuples needed to cover the date range"""
-        months = set()
-        current_date = start_date
-        
-        while current_date <= end_date:
-            months.add((current_date.year, current_date.month))
-            # Move to next month
-            if current_date.month == 12:
-                current_date = current_date.replace(year=current_date.year + 1, month=1)
-            else:
-                current_date = current_date.replace(month=current_date.month + 1)
-        
-        return sorted(list(months))
-
-    def _find_menu_for_month(self, available_menus: List[dict], year: int, month: int) -> Optional[str]:
-        """Find the menu ID for a specific year and month"""
-        # Look for exact match first
-        for menu in available_menus:
-            if menu.get("year") == year and menu.get("month") == month:
-                return menu.get("id")
-        
-        # Look for adjacent months as fallback
-        for menu in available_menus:
-            menu_year = menu.get("year")
-            menu_month = menu.get("month")
-            if (menu_year == year and menu_month and abs(menu_month - month) <= 1):
-                logger.info(f"Using adjacent month menu {menu_month}/{menu_year} for {month}/{year}")
-                return menu.get("id")
-        
-        return None
-
-    def _parse_graphql_menu_data(
-        self, menu: dict, num_days: int
-    ) -> Dict[str, List[str]]:
-        """Parse menu data from GraphQL response"""
-        try:
-            # DEBUG: Log raw menu data from GraphQL
-            logger.info(f"DEBUG: Raw GraphQL menu data: {menu}")
-            logger.info(f"DEBUG: Menu items count: {len(menu.get('items', []))}")
-
-            # Validate menu structure
-            menu_month, menu_year = self._extract_menu_dates(menu)
-            if not menu_month or not menu_year:
-                logger.info(
-                    f"DEBUG: Invalid menu dates - month: {menu_month}, year: {menu_year}"
-                )
-                return self._get_empty_menu_for_days(num_days)
-
-            logger.info(f"DEBUG: Menu for {menu_month}/{menu_year}")
-
-            # Group items by day
-            daily_items = self._group_items_by_day(menu.get("items", []))
-            logger.info(f"DEBUG: Daily items grouped: {daily_items}")
-
-            # Convert to date-based format
-            menu_data = self._convert_to_date_format(
-                daily_items, menu_month, menu_year, num_days
-            )
-            logger.info(f"DEBUG: Final menu_data: {menu_data}")
-
-            logger.info(f"Successfully parsed menu data for {len(menu_data)} days")
-            return menu_data
-
-        except Exception as e:
-            logger.error(f"Error parsing GraphQL menu data: {e}")
-            return self._get_empty_menu_for_days(num_days)
-
-    def _extract_menu_dates(self, menu: dict) -> tuple[Optional[int], Optional[int]]:
-        """Extract month and year from menu data"""
-        menu_month = menu.get("month")
-        menu_year = menu.get("year")
-
-        if not menu_month or not menu_year:
-            logger.error("Menu missing month or year information")
-            return None, None
-
-        return menu_month, menu_year
-
-    def _group_items_by_day(self, items: List[dict]) -> Dict[int, List[str]]:
-        """Group menu items by day of month"""
-        daily_items = {}
-
-        for item in items:
-            day = item.get("day")
-            product = item.get("product", {})
-            product_name = product.get("name")
-
-            if day and product_name and str(product_name).strip():
-                if day not in daily_items:
-                    daily_items[day] = []
-
-                # Clean the product name - remove colons and extra whitespace
-                cleaned_name = str(product_name).strip().rstrip(":")
-                if cleaned_name and cleaned_name not in daily_items[day]:
-                    daily_items[day].append(cleaned_name)
-
-        return daily_items
-
-    def _convert_to_date_format(
-        self,
-        daily_items: Dict[int, List[str]],
-        menu_month: int,
-        menu_year: int,
-        num_days: int,
-    ) -> Dict[str, List[str]]:
-        """Convert daily items to date-based format"""
-        logger.info(f"DEBUG: Converting to date format - daily_items: {daily_items}")
-        logger.info(
-            f"DEBUG: Menu range: {menu_month}/{menu_year}, num_days: {num_days}"
-        )
-
-        menu_data = {}
-        search_date = date.today()
-        days_added = 0
-
-        while days_added < num_days:
-            # Skip weekends
-            if self._is_school_day(search_date):
-                date_str = search_date.strftime("%Y-%m-%d")
-                logger.info(f"DEBUG: Processing date {date_str}")
-
-                if self._is_date_in_menu_range(search_date, menu_month, menu_year):
-                    day_of_month = search_date.day
-                    logger.info(
-                        f"DEBUG: Day {day_of_month} - available items: {daily_items.get(day_of_month, 'None')}"
-                    )
-
-                    if day_of_month in daily_items:
-                        # Filter out standard items
-                        items = daily_items[day_of_month]
-                        filtered_items = self._filter_standard_items(items)
-                        logger.info(
-                            f"DEBUG: Filtered items for {date_str}: {filtered_items}"
-                        )
-
-                        # Only add if we have items after filtering
-                        if filtered_items:
-                            menu_data[date_str] = filtered_items
-                        else:
-                            menu_data[date_str] = ["No menu available"]
-                    else:
-                        menu_data[date_str] = ["No menu available"]
+                # If fetch succeeded but this specific future day has no data, use pending placeholder
+                if fetch_ok and d >= date.today():
+                    menu_subset[iso] = [PENDING_TEXT]
                 else:
-                    logger.warning(f"DEBUG: Date {date_str} not in menu range for menu {menu_month}/{menu_year}")
-                    logger.warning("HINT: You may need to update the menu ID to a more recent month's menu")
-                    menu_data[date_str] = [f"Menu ID has {menu_month}/{menu_year} data", "Check plugin settings"]
+                    menu_subset[iso] = []
 
-                days_added += 1
+        # Build template parameters
+        tz_now = datetime.now()
+        day_names = {
+            iso: datetime.fromisoformat(iso).strftime("%A") for iso in menu_subset
+        }
+        formatted_dates = {
+            iso: datetime.fromisoformat(iso).strftime("%b %d") for iso in menu_subset
+        }
+        single_date_text = ""  # Only used when one day and show_date
+        if len(menu_subset) == 1:
+            only_iso = next(iter(menu_subset))
+            single_date_text = datetime.fromisoformat(only_iso).strftime("%A, %B %d")
 
-            search_date += timedelta(days=1)
+        dimensions = device_config.get_resolution()
+        if device_config.get_config("orientation") == "vertical":
+            dimensions = dimensions[::-1]
 
-        logger.info(f"DEBUG: Final converted menu_data: {menu_data}")
-        return menu_data
-
-    def _process_discovered_menu_data(self, discovered_data: Dict, num_days: int) -> Dict[str, List[str]]:
-        """Process the multi-month discovered menu data into the expected format"""
-        try:
-            logger.info("Processing discovered menu data from multiple months")
-            
-            # Extract all menus from the discovered data
-            menus = discovered_data.get("data", {}).get("menusByLocation", [])
-            if not menus:
-                logger.warning("No menus found in discovered data")
-                return self._get_empty_menu_for_days(num_days)
-            
-            # Collect all menu items from all months
-            all_daily_items = {}
-            
-            for menu in menus:
-                logger.info(f"Processing menu: {menu.get('name', 'Unknown')}")
-                
-                # Extract menu dates
-                menu_month, menu_year = self._extract_menu_dates(menu)
-                if not menu_month or not menu_year:
-                    logger.warning(f"Skipping menu with invalid dates: {menu}")
-                    continue
-                
-                # Group items by day for this menu
-                daily_items = self._group_items_by_day(menu.get("items", []))
-                
-                # Add items to our collection, prefixed with month/year for uniqueness
-                for day, items in daily_items.items():
-                    try:
-                        # Create a date object to use as key
-                        menu_date = date(menu_year, menu_month, day)
-                        date_str = menu_date.strftime("%Y-%m-%d")
-                        
-                        if date_str not in all_daily_items:
-                            all_daily_items[date_str] = []
-                        
-                        # Add items, avoiding duplicates
-                        for item in items:
-                            if item not in all_daily_items[date_str]:
-                                all_daily_items[date_str].append(item)
-                                
-                    except ValueError as e:
-                        logger.warning(f"Invalid date {menu_year}-{menu_month}-{day}: {e}")
-                        continue
-            
-            # Now build the final menu data for the requested date range
-            menu_data = {}
-            search_date = date.today()
-            days_added = 0
-            
-            while days_added < num_days:
-                # Skip weekends
-                if self._is_school_day(search_date):
-                    date_str = search_date.strftime("%Y-%m-%d")
-                    
-                    if date_str in all_daily_items:
-                        # Filter out standard items
-                        items = all_daily_items[date_str]
-                        filtered_items = self._filter_standard_items(items)
-                        
-                        if filtered_items:
-                            menu_data[date_str] = filtered_items
-                        else:
-                            menu_data[date_str] = ["No menu available"]
-                    else:
-                        menu_data[date_str] = ["No menu available"]
-                    
-                    days_added += 1
-                
-                search_date += timedelta(days=1)
-            
-            logger.info(f"Successfully processed discovered menu data for {len(menu_data)} days")
-            return menu_data
-            
-        except Exception as e:
-            logger.error(f"Error processing discovered menu data: {e}")
-            return self._get_empty_menu_for_days(num_days)
-
-    def _is_school_day(self, check_date: date) -> bool:
-        """Check if the given date is a school day (Monday-Friday)"""
-        return check_date.weekday() < 5  # Monday=0, Friday=4
-
-    def _is_date_in_menu_range(
-        self, check_date: date, menu_month: int, menu_year: int
-    ) -> bool:
-        """Check if the given date is within the menu's month/year range
-
-        Handle cases where menu metadata might be off by checking current and adjacent months
-        """
-        # Primary check: exact month match
-        if check_date.month == menu_month and check_date.year == menu_year:
-            return True
-
-        # Secondary check: allow for month metadata being off by 1
-        # This handles cases where menu shows August but contains September data
-        current_month = check_date.month
-        current_year = check_date.year
-
-        # Check if we're in the month after the menu month (menu month might be behind)
-        if (current_month == menu_month + 1 and current_year == menu_year) or (
-            current_month == 1 and menu_month == 12 and current_year == menu_year + 1
-        ):
-            logger.info(
-                f"DEBUG: Allowing date {check_date} for menu month {menu_month}/{menu_year} (month metadata may be off)"
-            )
-            return True
-
-        # Check if we're in the month before the menu month (menu month might be ahead)
-        if (current_month == menu_month - 1 and current_year == menu_year) or (
-            current_month == 12 and menu_month == 1 and current_year == menu_year - 1
-        ):
-            logger.info(
-                f"DEBUG: Allowing date {check_date} for menu month {menu_month}/{menu_year} (month metadata may be off)"
-            )
-            return True
-
-        # Extended check: Allow up to 2 months difference for very misaligned data
-        # This helps when menus are significantly out of sync
-        month_diff = abs(current_month - menu_month)
-        if current_year == menu_year and month_diff <= 2:
-            logger.warning(
-                f"DEBUG: Allowing date {check_date} for menu month {menu_month}/{menu_year} (extended range - {month_diff} months off)"
-            )
-            return True
-
-        return False
-
-    def _get_empty_menu_for_days(self, num_days: int) -> Dict[str, List[str]]:
-        """Get empty menu structure for specified number of days, skipping weekends"""
-        menu_data = {}
-        current_date = date.today()
-        days_added = 0
-
-        while days_added < num_days:
-            # Skip weekends (Saturday = 5, Sunday = 6)
-            if current_date.weekday() < 5:  # Monday = 0, Friday = 4
-                date_str = current_date.strftime("%Y-%m-%d")
-                # Return empty list to indicate no menu data available
-                menu_data[date_str] = ["Menu not available"]
-                days_added += 1
-
-            current_date += timedelta(days=1)
-
-        return menu_data
-
-    def _filter_standard_items(self, menu_items: List[str]) -> List[str]:
-        """Filter out standard lunch items like garden bar and milk"""
-        filtered_items = []
-        for item in menu_items:
-            # Check if this item should be filtered out
-            should_filter = False
-            for standard_item in STANDARD_ITEMS:
-                if standard_item.lower() in item.lower():
-                    should_filter = True
-                    break
-
-            if not should_filter:
-                filtered_items.append(item)
-
-        return filtered_items
-
-    def generate_image(self, settings, device_config):
-        """Generate the school menu image using HTML/CSS rendering"""
-        try:
-            # Parse and validate settings
-            config = self._parse_settings(settings)
-
-            # Get menu data for specified days
-            menu_data = self.get_menu_for_days(
-                config["num_days"], config["menu_id"], config["site_code"]
-            )
-
-            # Get dimensions
-            dimensions = device_config.get_resolution()
-            if device_config.get_config("orientation") == "vertical":
-                dimensions = dimensions[::-1]
-
-            # Prepare template parameters
-            template_params = self._prepare_template_params(
-                menu_data, config, settings, device_config
-            )
-
-            # Render the image using HTML/CSS
-            image = self.render_image(
-                dimensions, "menu.html", "menu.css", template_params
-            )
-
-            if not image:
-                raise RuntimeError("Failed to render menu image, please check logs.")
-
-            logger.info("School menu image rendered successfully using HTML/CSS")
-            return image
-
-        except Exception as e:
-            logger.error(f"Error generating school menu image: {str(e)}")
-            raise RuntimeError(f"Failed to generate school menu image: {str(e)}")
-
-    def _prepare_template_params(
-        self,
-        menu_data: Dict[str, List[str]],
-        config: dict,
-        settings: dict,
-        device_config,
-    ) -> dict:
-        """Prepare template parameters for HTML/CSS rendering"""
-        from datetime import date, timedelta
-
-        # Get current date info
-        today = date.today()
-        tomorrow = today + timedelta(days=1)
-        today_str = today.strftime("%Y-%m-%d")
-        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-
-        # Prepare formatted dates and day names
-        formatted_dates = {}
-        day_names = {}
-
-        for date_str in menu_data.keys():
-            menu_date = date.fromisoformat(date_str)
-            formatted_dates[date_str] = menu_date.strftime("%m/%d")
-            day_names[date_str] = menu_date.strftime("%A")
-
-        # Single day date text
-        single_date_text = ""
-        if len(menu_data) == 1:
-            single_date = today
-            single_date_text = single_date.strftime("%A, %B %d, %Y")
-
-        # Get timezone and time format for timestamp
-        timezone = device_config.get_config("timezone", default="America/New_York")
-        time_format = device_config.get_config("time_format", default="12h")
-
-        timestamp = ""
-        show_timestamp = True
-        try:
-            import pytz
-
-            tz = pytz.timezone(timezone)
-            now = datetime.now(tz)
-
-            if time_format == "12h":
-                timestamp = now.strftime("%I:%M %p")
-            else:
-                timestamp = now.strftime("%H:%M")
-        except Exception as e:
-            logger.warning(f"Error generating timestamp: {e}")
-            show_timestamp = False
-
-        return {
-            "menu_data": menu_data,
-            "plugin_settings": settings,
-            "font_scale": config["font_scale"],
-            "today_str": today_str,
-            "tomorrow_str": tomorrow_str,
-            "formatted_dates": formatted_dates,
+        template_params = {
+            "plugin_settings": {
+                **settings,
+                "customTitle": cfg.menu_name,
+                "showDate": "true" if cfg.show_date else "false",
+                "primaryColor": cfg.primary_color,
+                "textColor": cfg.text_color,
+                "backgroundColor": cfg.background_color,
+            },
+            "menu_data": menu_subset,
             "day_names": day_names,
+            "formatted_dates": formatted_dates,
             "single_date_text": single_date_text,
-            "timestamp": timestamp,
-            "show_timestamp": show_timestamp,
+            "today_str": date.today().isoformat(),
+            "timestamp": tz_now.strftime("%Y-%m-%d %H:%M"),
+            "show_timestamp": cfg.show_timestamp,
+            "font_scale": cfg.font_scale,
         }
 
-    def _parse_settings(self, settings: dict) -> dict:
-        """Parse and validate plugin settings"""
-        menu_id = (
-            settings.get("menuId", "").strip() or settings.get("schoolId", "").strip()
+        image = self.render_image(dimensions, "menu.html", "menu.css", template_params)
+        if not image:
+            raise RuntimeError("Failed to render SchoolMenu image.")
+        return image
+
+    # ------------------------------------------------------------------
+    # Parsing / filtering
+    # ------------------------------------------------------------------
+    def _parse_settings(self, settings: dict) -> ParsedSettings:
+        district_id = settings.get("districtId", "").strip()
+        if not district_id:
+            raise ValueError("districtId is required")
+
+        school_id = settings.get("schoolId", "").strip()
+        if not school_id:
+            raise ValueError("schoolId is required")
+
+        menu_name = settings.get("menuName", "").strip()
+        if not menu_name:
+            raise ValueError("menuName is required")
+
+        try:
+            days = int(settings.get("numDays", 3))
+        except Exception:
+            days = 3
+        if not (MIN_DAYS <= days <= MAX_DAYS):
+            days = 3
+        show_date = str(settings.get("showDate", "true")).lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        title = settings.get("customTitle", "School Lunch Menu").strip()
+
+        font_scale = FONT_SIZES.get(settings.get("fontSize", "normal"), 1.0)
+        primary_color = settings.get("primaryColor", "#323296")
+        text_color = settings.get("textColor", "#000000")
+        background_color = settings.get("backgroundColor", "#ffffff")
+        show_timestamp = str(
+            settings.get("showTimestamp", settings.get("displayRefreshTime", "true"))
+        ).lower() in {"1", "true", "yes", "on"}
+        return ParsedSettings(
+            district_id=district_id,
+            school_id=school_id,
+            menu_name=menu_name,
+            days=days,
+            title=title,
+            show_date=show_date,
+            font_scale=font_scale,
+            primary_color=primary_color,
+            text_color=text_color,
+            background_color=background_color,
+            show_timestamp=show_timestamp,
         )
-        site_code = settings.get("siteCode", "").strip() or None
-        num_days = int(settings.get("numDays", settings.get("numberOfDays", 1)))
-        show_date = settings.get("showDate", True)
-        custom_title = settings.get("customTitle", "School Lunch Menu")
-        font_size = settings.get("fontSize", "normal")
-        font_scale = FONT_SIZES.get(font_size, 1.0)
 
-        # Validate num_days
-        if not self._is_valid_day_count(num_days):
-            num_days = 1
+    def _next_school_days(self, n: int) -> List[date]:
+        out: List[date] = []
+        cur = date.today()
+        while len(out) < n:
+            if cur.weekday() < 5:  # Monday-Friday
+                out.append(cur)
+            cur += timedelta(days=1)
+        return out
 
-        return {
-            "menu_id": menu_id,
-            "site_code": site_code,
-            "num_days": num_days,
-            "show_date": show_date,
-            "custom_title": custom_title,
-            "font_size": font_size,
-            "font_scale": font_scale,
-        }
+
+__all__ = ["SchoolMenu"]
