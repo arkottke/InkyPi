@@ -59,8 +59,9 @@ class GraphQLError(RuntimeError):
 
 
 def _post_graphql(query: str) -> dict:
-    params = {"query": query}
-    resp = requests.post(GQL_ENDPOINT, params=params, timeout=30)
+    headers = {"Content-Type": "application/json"}
+    body = {"query": query}
+    resp = requests.post(GQL_ENDPOINT, json=body, headers=headers, timeout=30)
     resp.raise_for_status()
     payload = resp.json()
     if "errors" in payload:
