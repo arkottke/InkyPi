@@ -13,9 +13,10 @@ name and renders the next N school days using the Jinja template in
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import requests
 
@@ -40,15 +41,21 @@ MIN_DAYS = 1
 MAX_DAYS = 5
 PENDING_TEXT = "Not yet published"
 
+
 # Items that are considered boilerplate / ubiquitous accompaniments and should
 # be hidden from the rendered menu. These are matched on a normalized (lower
 # case, collapsed whitespace) exact basis. Expand this list as needed.
+def _normalize_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip().lower())
+
+
 COMMON_MENU_ITEM_FILTER = {
     "Garden Bar:",
     "organic fresh fruits and veggies",
     "straus organic 1% milk",
     "non-fat milk",
 }
+COMMON_MENU_ITEM_FILTER = {_normalize_name(item) for item in COMMON_MENU_ITEM_FILTER}
 
 
 # ---------------------------------------------------------------------------
@@ -67,19 +74,6 @@ def _post_graphql(query: str) -> dict:
     if "errors" in payload:
         raise GraphQLError(str(payload["errors"]))
     return payload.get("data", {})
-
-
-def _normalize_name(name: str) -> str:
-    import re
-
-    return re.sub(r"\s+", " ", name.strip().lower())
-
-
-def _build_site_input(district_id: str, school_id: Optional[str]) -> str:
-    parts = [f'depth_0_id:"{district_id}"']
-    if school_id:
-        parts.append(f'depth_1_id:"{school_id}"')
-    return "{" + ",".join(parts) + "}"
 
 
 def _validate_site_in_district(district_id: str, school_id: str) -> None:
@@ -202,7 +196,6 @@ def fetch_menu_items(
             continue
         # Filter out ubiquitous / condiment / generic sides defined above
         norm_name = _normalize_name(name)
-        print(norm_name)
         if norm_name in COMMON_MENU_ITEM_FILTER:
             continue
         by_date.setdefault(date_key, []).append(name)
@@ -251,7 +244,9 @@ class SchoolMenu(BasePlugin):
         fetch_ok = True
         try:
             # Order: district_id, school_id, menu_name (positional to avoid duplication)
-            logger.info(f"Fetching menu: district={cfg.district_id}, school={cfg.school_id}, menu={cfg.menu_name}")
+            logger.info(
+                f"Fetching menu: district={cfg.district_id}, school={cfg.school_id}, menu={cfg.menu_name}"
+            )
             all_items = fetch_menu_items(
                 cfg.district_id,
                 cfg.school_id,
@@ -260,7 +255,9 @@ class SchoolMenu(BasePlugin):
             logger.info(f"Successfully fetched {len(all_items)} dates from GraphQL")
         except Exception as e:  # pragma: no cover
             fetch_ok = False
-            logger.error(f"GraphQL fetch failed: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(
+                f"GraphQL fetch failed: {type(e).__name__}: {e}", exc_info=True
+            )
             today_iso = date.today().isoformat()
             all_items = {today_iso: ["Menu not available"]}
 
