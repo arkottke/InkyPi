@@ -251,14 +251,16 @@ class SchoolMenu(BasePlugin):
         fetch_ok = True
         try:
             # Order: district_id, school_id, menu_name (positional to avoid duplication)
+            logger.info(f"Fetching menu: district={cfg.district_id}, school={cfg.school_id}, menu={cfg.menu_name}")
             all_items = fetch_menu_items(
                 cfg.district_id,
                 cfg.school_id,
                 cfg.menu_name,
             )
+            logger.info(f"Successfully fetched {len(all_items)} dates from GraphQL")
         except Exception as e:  # pragma: no cover
             fetch_ok = False
-            logger.warning("GraphQL fetch failed: %s", e)
+            logger.error(f"GraphQL fetch failed: {type(e).__name__}: {e}", exc_info=True)
             today_iso = date.today().isoformat()
             all_items = {today_iso: ["Menu not available"]}
 
