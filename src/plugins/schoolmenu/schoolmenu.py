@@ -149,56 +149,58 @@ def fetch_menu_items(
                 f"Ambiguous menu name '{menu_name}'. Candidates: {[mt.get('name') for mt in partial]}"
             )
 
-    # 2. Fetch defaultPublishedMonth id for that menuType
-    query_default_month = (
-        f'{{  menuType(id:"{menu_type_id}") {{ defaultPublishedMonth {{ id }} }}}}'
-    )
-    mt_meta = _post_graphql(query_default_month).get("menuType") or {}
-    month_info = mt_meta.get("defaultPublishedMonth") or {}
-    menu_id = month_info.get("id")
-    if not menu_id:
-        raise ValueError(f"Menu '{menu_name}' has no currently published month.")
+    # 2. Fetch menu items for current (and possibly next) month
+    # We bypass defaultPublishedMonth to ensure we get the relevant dates.
+    today = date.today()
+    # 0-indexed month for GraphQL
+    months_to_fetch = [(today.month - 1, today.year)]
 
-    # 3. Fetch the menu items (minimal fields)
-    query_menu = (
-        "{"
-        f'  menu(id:"{menu_id}") {{ id month year items {{ day month year product {{ name }} }} }}'
-        "}"
-    )
-    menu_payload = _post_graphql(query_menu).get("menu") or {}
-    items = menu_payload.get("items") or []
-    top_month_idx = menu_payload.get("month")  # zero-based
-    top_year = menu_payload.get("year")
+    # If late in the month, fetch next month too to ensure coverage
+    if today.day > 20:
+        # Calculate next month safely
+        if today.month == 12:
+            months_to_fetch.append((0, today.year + 1))
+        else:
+            months_to_fetch.append((today.month, today.year))
 
     by_date: Dict[str, List[str]] = {}
-    for it in items:
-        # Month resolution
-        raw_item_month = it.get("month")
-        if isinstance(raw_item_month, int):
-            month_num = raw_item_month + 1
-        elif isinstance(top_month_idx, int):
-            month_num = top_month_idx + 1
-        else:
-            # Skip if month cannot be resolved
-            continue
-        year_val = it.get("year") or top_year
-        if not isinstance(year_val, int):
-            continue
-        day_raw = it.get("day")
-        try:
-            day_int = int(day_raw)
-        except Exception:
-            continue
-        date_key = f"{year_val}-{month_num:02d}-{day_int:02d}"
-        prod = it.get("product") or {}
-        name = prod.get("name")
-        if not name:
-            continue
-        # Filter out ubiquitous / condiment / generic sides defined above
-        norm_name = _normalize_name(name)
-        if norm_name in COMMON_MENU_ITEM_FILTER:
-            continue
-        by_date.setdefault(date_key, []).append(name)
+
+    for m_idx, year_val in months_to_fetch:
+        query_menu = (
+            "{"
+            f'  menuType(id:"{menu_type_id}") {{ menu(month:{m_idx}, year:{year_val}) {{ items {{ day month year product {{ name }} }} }} }}'
+            "}"
+        )
+        mt_data = _post_graphql(query_menu).get("menuType") or {}
+        menu_payload = mt_data.get("menu") or {}
+        items = menu_payload.get("items") or []
+
+        for it in items:
+            # Month resolution
+            raw_item_month = it.get("month")
+            if isinstance(raw_item_month, int):
+                month_num = raw_item_month + 1
+            else:
+                month_num = m_idx + 1
+
+            item_year = it.get("year") or year_val
+
+            day_raw = it.get("day")
+            try:
+                day_int = int(day_raw)
+            except (ValueError, TypeError):
+                continue
+
+            date_key = f"{item_year}-{month_num:02d}-{day_int:02d}"
+            prod = it.get("product") or {}
+            name = prod.get("name")
+            if not name:
+                continue
+            # Filter out ubiquitous / condiment / generic sides defined above
+            norm_name = _normalize_name(name)
+            if norm_name in COMMON_MENU_ITEM_FILTER:
+                continue
+            by_date.setdefault(date_key, []).append(name)
 
     # Ensure chronological ordering (Python preserves insertion order)
     ordered: Dict[str, List[str]] = {}
